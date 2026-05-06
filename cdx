@@ -399,6 +399,7 @@ def tmux_status(session: dict[str, Any]) -> str:
 def configure_tmux_session(tmux_name: str) -> None:
     if shutil.which("tmux") is None:
         return
+    configure_tmux_server()
     options = [
         ("mouse", "on"),
         ("remain-on-exit", "off"),
@@ -414,6 +415,19 @@ def configure_tmux_session(tmux_name: str) -> None:
         if result.returncode != 0:
             log_event(f"tmux option failed session={tmux_name} option={option} value={value}: {result.stderr.strip()}")
     install_tmux_mouse_bindings()
+
+
+def configure_tmux_server() -> None:
+    if shutil.which("tmux") is None:
+        return
+    result = subprocess.run(
+        ["tmux", "set-option", "-gq", "mouse", "on"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        log_event(f"tmux global mouse option failed: {result.stderr.strip()}")
 
 
 def install_tmux_mouse_bindings() -> None:
