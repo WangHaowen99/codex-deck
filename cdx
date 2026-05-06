@@ -173,7 +173,7 @@ def print_menu(title: str, items: list[tuple[str, str, str]], subtitle: str | No
             label_text = bold(label)
             print(f"  {key_text}  {label_text}")
             if desc:
-                print(f"          {dim(desc)}")
+                print(f"      {dim(desc)}")
             print()
     print(rule())
 
@@ -1581,9 +1581,9 @@ def main_menu() -> int:
         registry = load_registry()
         count = len(registry.get("sessions", []))
         live_count = sum(1 for session in registry.get("sessions", []) if tmux_exists(session["tmux_session"]))
-        subtitle = f"{count} 个 cdx 会话 · {live_count} 个 live tmux · 手机 SSH 友好"
+        subtitle = f"{count} 个 cdx 会话 · {live_count} 个 live tmux"
         print_menu(
-            f"{APP_NAME} (cdx)",
+            APP_NAME,
             [
                 ("1", "进入会话", "attach 到 live tmux，或自动 resume Codex"),
                 ("2", "新建会话", "选择常用目录，创建一个新的 Codex 工作台"),
