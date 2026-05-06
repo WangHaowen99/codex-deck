@@ -1,5 +1,7 @@
 <div align="center" id="codex-deck">
 
+<img src="_image/app_icon.png" alt="Codex Deck App Icon" width="140">
+
 # Codex Deck
 
 专为手机 SSH 和远程终端打造的 Codex 会话管理器  
@@ -308,4 +310,3 @@ rm -rf ~/.config/cdx ~/.local/share/cdx ~/.local/state/cdx
 ```
 
 Codex Deck 不会删除 Codex 原始 conversation 历史。
-
