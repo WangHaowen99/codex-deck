@@ -1,0 +1,1532 @@
+#!/usr/bin/env python3
+"""Codex Deck: manage Codex CLI sessions through tmux."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import secrets
+import shlex
+import shutil
+import subprocess
+import sys
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+APP_NAME = "Codex Deck"
+APP_ID = "cdx"
+VERSION = 1
+MAX_NAME_LEN = 60
+CDX_HOOK_STATUS = "cdx session mapping"
+
+HOME = Path.home()
+CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
+DATA_HOME = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local" / "share"))
+STATE_HOME = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local" / "state"))
+
+CONFIG_DIR = CONFIG_HOME / APP_ID
+DATA_DIR = DATA_HOME / APP_ID
+STATE_DIR = STATE_HOME / APP_ID
+CONFIG_PATH = CONFIG_DIR / "config.json"
+REGISTRY_PATH = DATA_DIR / "sessions.json"
+LOCK_PATH = STATE_DIR / "lock"
+LOG_PATH = STATE_DIR / "cdx.log"
+
+CODEX_HOME = Path(os.environ.get("CODEX_HOME", HOME / ".codex"))
+CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
+CODEX_HOOKS_PATH = CODEX_HOME / "hooks.json"
+CODEX_SESSION_INDEX = CODEX_HOME / "session_index.jsonl"
+CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
+
+
+class CdxError(Exception):
+    pass
+
+
+@dataclass
+class RawCodexSession:
+    id: str
+    title: str
+    updated_at: str | None = None
+    cwd: str | None = None
+    transcript_path: str | None = None
+
+
+def ensure_dirs() -> None:
+    for path in (CONFIG_DIR, DATA_DIR, STATE_DIR):
+        path.mkdir(parents=True, exist_ok=True)
+
+
+def now_utc() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def backup_suffix() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def log_event(message: str) -> None:
+    try:
+        ensure_dirs()
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(f"{now_utc()} {message}\n")
+    except OSError:
+        pass
+
+
+@contextmanager
+def registry_lock():
+    ensure_dirs()
+    with LOCK_PATH.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    if not path.exists():
+        return default
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_json_atomic(path: Path, data: dict[str, Any], *, backup: bool = False, timestamped: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and backup:
+        shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+        if timestamped:
+            shutil.copy2(path, path.with_suffix(path.suffix + f".bak.{backup_suffix()}"))
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def default_config() -> dict[str, Any]:
+    return {
+        "version": VERSION,
+        "roots": [
+            {
+                "id": "home",
+                "name": "home",
+                "path": str(HOME),
+            }
+        ],
+    }
+
+
+def default_registry() -> dict[str, Any]:
+    return {"version": VERSION, "sessions": []}
+
+
+def load_config() -> dict[str, Any]:
+    data = load_json(CONFIG_PATH, default_config())
+    if data.get("version") != VERSION:
+        raise CdxError(f"不支持的配置版本: {data.get('version')}")
+    data.setdefault("roots", [])
+    return data
+
+
+def save_config(config: dict[str, Any]) -> None:
+    config["version"] = VERSION
+    write_json_atomic(CONFIG_PATH, config, backup=CONFIG_PATH.exists())
+
+
+def load_registry() -> dict[str, Any]:
+    data = load_json(REGISTRY_PATH, default_registry())
+    if data.get("version") != VERSION:
+        raise CdxError(f"不支持的注册表版本: {data.get('version')}")
+    data.setdefault("sessions", [])
+    return data
+
+
+def save_registry(registry: dict[str, Any], *, timestamped_backup: bool = False) -> None:
+    registry["version"] = VERSION
+    write_json_atomic(REGISTRY_PATH, registry, backup=REGISTRY_PATH.exists(), timestamped=timestamped_backup)
+
+
+def parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    match = re.match(r"^(.*T\d\d:\d\d:\d\d)\.(\d+)([+-]\d\d:\d\d)$", text)
+    if match:
+        text = f"{match.group(1)}.{match.group(2)[:6]:<06}{match.group(3)}"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def display_time(value: str | None) -> str:
+    dt = parse_iso(value)
+    if not dt:
+        return "--"
+    return dt.astimezone().strftime("%m-%d %H:%M")
+
+
+def sort_key_time(value: str | None) -> float:
+    dt = parse_iso(value)
+    return dt.timestamp() if dt else 0.0
+
+
+def require_tool(name: str) -> None:
+    if shutil.which(name) is None:
+        raise CdxError(f"未找到 {name}，请先安装。")
+
+
+def validate_name(raw: str) -> str:
+    name = raw.strip()
+    if not name:
+        raise CdxError("cdx_name 不能为空。")
+    if len(name) > MAX_NAME_LEN:
+        raise CdxError(f"cdx_name 最长 {MAX_NAME_LEN} 个字符。")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise CdxError("cdx_name 不能包含控制字符。")
+    return name
+
+
+def validate_root_name(raw: str) -> str:
+    name = raw.strip()
+    if not name:
+        raise CdxError("root 名不能为空。")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise CdxError("root 名不能包含控制字符。")
+    return name
+
+
+def normalize_path(raw: str) -> Path:
+    return Path(raw).expanduser().resolve(strict=False)
+
+
+def validate_child_path(raw: str) -> Path | None:
+    text = raw.strip()
+    if not text:
+        return None
+    candidate = Path(text)
+    if candidate.is_absolute():
+        raise CdxError("新建文件夹名不能是绝对路径。")
+    if ".." in candidate.parts:
+        raise CdxError("新建文件夹名不能包含 '..'。")
+    if any(part == "" for part in candidate.parts):
+        raise CdxError("新建文件夹名不合法。")
+    return candidate
+
+
+def unique_session_id(registry: dict[str, Any]) -> str:
+    existing = {s["id"] for s in registry.get("sessions", [])}
+    for _ in range(20):
+        sid = secrets.token_hex(4)
+        if sid not in existing and not tmux_exists(f"cdx_{sid}"):
+            return sid
+    raise CdxError("无法生成唯一内部 id。")
+
+
+def find_session_by_name(registry: dict[str, Any], name: str) -> dict[str, Any] | None:
+    for session in registry.get("sessions", []):
+        if session.get("name") == name:
+            return session
+    return None
+
+
+def find_session_by_id(registry: dict[str, Any], session_id: str) -> dict[str, Any] | None:
+    for session in registry.get("sessions", []):
+        if session.get("id") == session_id:
+            return session
+    return None
+
+
+def find_session_by_codex_id(registry: dict[str, Any], codex_id: str) -> dict[str, Any] | None:
+    for session in registry.get("sessions", []):
+        if session.get("codex_session_id") == codex_id:
+            return session
+    return None
+
+
+def tmux_exists(name: str) -> bool:
+    if shutil.which("tmux") is None:
+        return False
+    result = subprocess.run(["tmux", "has-session", "-t", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
+
+
+def tmux_status(session: dict[str, Any]) -> str:
+    return "live" if tmux_exists(session["tmux_session"]) else "exited"
+
+
+def sorted_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    return sorted(
+        registry.get("sessions", []),
+        key=lambda s: (sort_key_time(s.get("last_used_at")) or sort_key_time(s.get("created_at")), s.get("name", "")),
+        reverse=True,
+    )
+
+
+def short_text(text: str | None, max_len: int = 28) -> str:
+    if not text:
+        return ""
+    return text if len(text) <= max_len else text[: max_len - 1] + "…"
+
+
+def print_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    sessions = sorted_sessions(registry)
+    if not sessions:
+        print("当前没有 cdx 会话。")
+        return []
+    for i, session in enumerate(sessions, start=1):
+        status = tmux_status(session)
+        bound = "bound" if session.get("codex_session_id") else "unbound"
+        used = display_time(session.get("last_used_at") or session.get("created_at"))
+        print(f"[{i}] {short_text(session.get('name'), 24)} | {status} | {bound} | {used}")
+    return sessions
+
+
+def choose_from_list(items: list[Any], prompt: str, label_fn) -> Any | None:
+    if not items:
+        return None
+    for i, item in enumerate(items, start=1):
+        print(f"[{i}] {label_fn(item)}")
+    choice = input(f"{prompt} [编号/名称，空取消]: ").strip()
+    if not choice:
+        return None
+    if choice.isdigit():
+        idx = int(choice)
+        if 1 <= idx <= len(items):
+            return items[idx - 1]
+    for item in items:
+        if label_fn(item) == choice or getattr(item, "id", None) == choice:
+            return item
+    print("无效选择。")
+    return None
+
+
+def choose_cdx_session(prompt: str = "选择 cdx 会话") -> dict[str, Any] | None:
+    registry = load_registry()
+    sessions = print_sessions(registry)
+    if not sessions:
+        return None
+    choice = input(f"{prompt} [编号/名称，空取消]: ").strip()
+    if not choice:
+        return None
+    if choice.isdigit():
+        idx = int(choice)
+        if 1 <= idx <= len(sessions):
+            return sessions[idx - 1]
+    for session in sessions:
+        if session.get("name") == choice:
+            return session
+    print("未找到会话。")
+    return None
+
+
+def ask_yes_no(prompt: str, *, default: bool = False) -> bool:
+    suffix = "[Y/n]" if default else "[y/N]"
+    answer = input(f"{prompt} {suffix} ").strip().lower()
+    if not answer:
+        return default
+    return answer in {"y", "yes"}
+
+
+def ensure_last_cwd(session: dict[str, Any]) -> bool:
+    cwd = session.get("last_cwd")
+    if cwd and Path(cwd).is_dir():
+        return True
+    print(f"上次目录不存在：{cwd or '-'}")
+    default = str(HOME)
+    raw = input(f"请输入新的目录，空使用 {default}: ").strip() or default
+    path = normalize_path(raw)
+    if not path.exists():
+        if not ask_yes_no(f"目录不存在：{path}，是否创建？", default=False):
+            return False
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"创建目录失败: {exc}")
+            return False
+    if not path.is_dir():
+        print("路径存在但不是目录。")
+        return False
+    with registry_lock():
+        registry = load_registry()
+        current = find_session_by_id(registry, session["id"])
+        if not current:
+            print("注册表中找不到该会话。")
+            return False
+        current["last_cwd"] = str(path)
+        current["updated_at"] = now_utc()
+        save_registry(registry)
+    session["last_cwd"] = str(path)
+    return True
+
+
+def choose_session_directory() -> str | None:
+    config = load_config()
+    roots = config.get("roots", [])
+    if not roots:
+        print("没有常用目录，请先添加 root。")
+        return None
+    print("常用目录：")
+    for i, root in enumerate(roots, start=1):
+        print(f"[{i}] {root['name']} {root['path']}")
+    raw = input("选择常用目录编号: ").strip()
+    if not raw.isdigit() or not (1 <= int(raw) <= len(roots)):
+        print("无效选择。")
+        return None
+    root_path = normalize_path(roots[int(raw) - 1]["path"])
+    if not root_path.exists():
+        if not ask_yes_no(f"常用目录不存在：{root_path}，是否创建？", default=False):
+            return None
+        try:
+            root_path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"创建常用目录失败: {exc}")
+            return None
+    if not root_path.is_dir():
+        print(f"常用目录不是目录：{root_path}")
+        return None
+    child_raw = input("新建文件夹名（可空；支持 a/b/c）: ")
+    try:
+        child = validate_child_path(child_raw)
+    except CdxError as exc:
+        print(f"错误: {exc}")
+        return None
+    final_path = root_path if child is None else root_path / child
+    if final_path.exists() and not final_path.is_dir():
+        print(f"路径存在但不是目录：{final_path}")
+        return None
+    if not final_path.exists():
+        try:
+            final_path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"创建目录失败: {exc}")
+            return None
+    return str(final_path.resolve(strict=False))
+
+
+def current_cdx_path() -> str:
+    arg0 = Path(sys.argv[0])
+    if arg0.is_absolute() and arg0.exists():
+        return str(arg0.resolve())
+    found = shutil.which("cdx")
+    if found:
+        return str(Path(found).resolve())
+    return str(arg0.resolve(strict=False))
+
+
+def is_hook_installed() -> bool:
+    if not CODEX_HOOKS_PATH.exists():
+        return False
+    try:
+        hooks = load_json(CODEX_HOOKS_PATH, {})
+    except Exception:
+        return False
+    for group in hooks.get("hooks", {}).get("SessionStart", []):
+        for hook in group.get("hooks", []):
+            command = hook.get("command", "")
+            if "__hook-session-start" in command:
+                return True
+    return False
+
+
+def is_feature_enabled() -> bool:
+    if not CODEX_CONFIG_PATH.exists():
+        return False
+    text = CODEX_CONFIG_PATH.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    in_features = False
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^\[[^\]]+\]$", stripped):
+            in_features = stripped == "[features]"
+            continue
+        if in_features and re.match(r"^codex_hooks\s*=\s*true\s*(#.*)?$", stripped):
+            return True
+    return False
+
+
+def enable_codex_hooks_feature() -> None:
+    CODEX_HOME.mkdir(parents=True, exist_ok=True)
+    old_text = CODEX_CONFIG_PATH.read_text(encoding="utf-8") if CODEX_CONFIG_PATH.exists() else ""
+    lines = old_text.splitlines()
+    new_lines: list[str] = []
+    in_features = False
+    features_seen = False
+    key_seen = False
+    inserted = False
+
+    for line in lines:
+        stripped = line.strip()
+        is_table = bool(re.match(r"^\[[^\]]+\]$", stripped))
+        if is_table:
+            if in_features and not key_seen:
+                new_lines.append("codex_hooks = true")
+                inserted = True
+            in_features = stripped == "[features]"
+            features_seen = features_seen or in_features
+            key_seen = False if in_features else key_seen
+            new_lines.append(line)
+            continue
+        if in_features and re.match(r"^codex_hooks\s*=", stripped):
+            new_lines.append("codex_hooks = true")
+            key_seen = True
+            inserted = True
+        else:
+            new_lines.append(line)
+
+    if in_features and not key_seen:
+        new_lines.append("codex_hooks = true")
+        inserted = True
+    if not features_seen:
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        new_lines.append("[features]")
+        new_lines.append("codex_hooks = true")
+        inserted = True
+    new_text = "\n".join(new_lines).rstrip() + "\n"
+    if new_text != old_text:
+        if CODEX_CONFIG_PATH.exists():
+            shutil.copy2(CODEX_CONFIG_PATH, CODEX_CONFIG_PATH.with_suffix(f".toml.cdx.bak.{backup_suffix()}"))
+        CODEX_CONFIG_PATH.write_text(new_text, encoding="utf-8")
+        log_event("enabled codex_hooks feature")
+    elif inserted:
+        log_event("codex_hooks feature already enabled")
+
+
+def install_hooks_json() -> None:
+    CODEX_HOME.mkdir(parents=True, exist_ok=True)
+    hooks = load_json(CODEX_HOOKS_PATH, {"hooks": {}})
+    if not isinstance(hooks.get("hooks"), dict):
+        raise CdxError(f"{CODEX_HOOKS_PATH} 格式不兼容：hooks 必须是对象。")
+    events = hooks.setdefault("hooks", {})
+    groups = events.setdefault("SessionStart", [])
+    if not isinstance(groups, list):
+        raise CdxError(f"{CODEX_HOOKS_PATH} 格式不兼容：SessionStart 必须是数组。")
+
+    cleaned = []
+    for group in groups:
+        group_hooks = group.get("hooks", []) if isinstance(group, dict) else []
+        kept_hooks = [h for h in group_hooks if "__hook-session-start" not in h.get("command", "")]
+        if kept_hooks:
+            next_group = dict(group)
+            next_group["hooks"] = kept_hooks
+            cleaned.append(next_group)
+    command = f"{shlex.quote(current_cdx_path())} __hook-session-start"
+    cleaned.append(
+        {
+            "matcher": "^(startup|resume)$",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command,
+                    "timeout": 10,
+                    "statusMessage": CDX_HOOK_STATUS,
+                }
+            ],
+        }
+    )
+    events["SessionStart"] = cleaned
+    write_json_atomic(CODEX_HOOKS_PATH, hooks, backup=CODEX_HOOKS_PATH.exists(), timestamped=True)
+    log_event(f"installed session-start hook: {command}")
+
+
+def install_hook_interactive(auto: bool = False) -> bool:
+    if auto:
+        print("cdx 需要安装 Codex SessionStart hook 到 ~/.codex/hooks.json，并启用 ~/.codex/config.toml 里的 codex_hooks。")
+    if not ask_yes_no("继续安装/校验 hook？", default=True):
+        print("已取消 hook 安装。")
+        return False
+    enable_codex_hooks_feature()
+    install_hooks_json()
+    print("hook 已安装。")
+    return True
+
+
+def cmd_init(auto: bool = False) -> int:
+    ensure_dirs()
+    if not CONFIG_PATH.exists():
+        save_config(default_config())
+        print(f"已创建配置: {CONFIG_PATH}")
+    if not REGISTRY_PATH.exists():
+        save_registry(default_registry())
+        print(f"已创建注册表: {REGISTRY_PATH}")
+    if not is_feature_enabled() or not is_hook_installed():
+        if not install_hook_interactive(auto=auto):
+            return 1
+    else:
+        print("hook 已安装。")
+    log_event("init completed")
+    return 0
+
+
+def ensure_initialized() -> bool:
+    if CONFIG_PATH.exists() and REGISTRY_PATH.exists() and is_feature_enabled() and is_hook_installed():
+        return True
+    print("cdx 尚未初始化或 hook 缺失，先运行 init。")
+    return cmd_init(auto=True) == 0
+
+
+def create_record(name: str, cwd: str, codex_session_id: str | None = None, transcript_path: str | None = None) -> dict[str, Any]:
+    with registry_lock():
+        registry = load_registry()
+        if find_session_by_name(registry, name):
+            raise CdxError(f"会话已存在: {name}")
+        sid = unique_session_id(registry)
+        created = now_utc()
+        session = {
+            "id": sid,
+            "name": name,
+            "tmux_session": f"cdx_{sid}",
+            "codex_session_id": codex_session_id,
+            "last_cwd": cwd,
+            "created_at": created,
+            "updated_at": created,
+            "last_used_at": created,
+            "transcript_path": transcript_path,
+        }
+        registry["sessions"].append(session)
+        save_registry(registry)
+        log_event(f"created cdx session id={sid} name={name!r}")
+        return session
+
+
+def create_tmux_if_needed(session: dict[str, Any]) -> bool:
+    require_tool("tmux")
+    require_tool("codex")
+    tmux_name = session["tmux_session"]
+    with registry_lock():
+        registry = load_registry()
+        current = find_session_by_id(registry, session["id"])
+        if not current:
+            raise CdxError("注册表中找不到该会话。")
+        if tmux_exists(tmux_name):
+            return True
+        window_name = short_text(current["name"], 30) or "cdx"
+        command = f"{shlex.quote(current_cdx_path())} __runner {shlex.quote(current['id'])}"
+        result = subprocess.run(
+            ["tmux", "new-session", "-d", "-s", tmux_name, "-n", window_name, command],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            print(f"创建 tmux 失败: {result.stderr.strip() or result.stdout.strip()}")
+            return False
+        subprocess.run(["tmux", "set-option", "-t", tmux_name, "remain-on-exit", "off"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log_event(f"created tmux session {tmux_name} for cdx id={current['id']}")
+        return True
+
+
+def attach_tmux(session: dict[str, Any]) -> int:
+    tmux_name = session["tmux_session"]
+    if os.environ.get("TMUX"):
+        result = subprocess.run(["tmux", "switch-client", "-t", tmux_name])
+    else:
+        result = subprocess.run(["tmux", "attach-session", "-t", tmux_name])
+    if result.returncode != 0:
+        print(f"进入 tmux 失败，session 已保留: {tmux_name}")
+    return result.returncode
+
+
+def touch_last_used(session_id: str) -> None:
+    with registry_lock():
+        registry = load_registry()
+        session = find_session_by_id(registry, session_id)
+        if not session:
+            return
+        ts = now_utc()
+        session["last_used_at"] = ts
+        session["updated_at"] = ts
+        save_registry(registry)
+
+
+def enter_session(session: dict[str, Any], *, unbound_mode: str = "prompt") -> int:
+    if tmux_exists(session["tmux_session"]):
+        touch_last_used(session["id"])
+        return attach_tmux(session)
+    if not session.get("codex_session_id"):
+        if unbound_mode == "new":
+            pass
+        else:
+            print(f"会话“{session['name']}”还没有绑定 Codex 原始会话。")
+            print("[1] 新建 Codex 会话并绑定")
+            print("[2] 绑定已有 Codex 会话")
+            print("[3] 取消")
+            choice = input("请选择: ").strip()
+            if choice == "2":
+                if map_bind(target_session_id=session["id"]) == 0:
+                    with registry_lock():
+                        registry = load_registry()
+                        refreshed = find_session_by_id(registry, session["id"])
+                        if refreshed:
+                            session = refreshed
+                    if not session.get("codex_session_id"):
+                        return 1
+                else:
+                    return 1
+            elif choice != "1":
+                print("已取消。")
+                return 1
+    if not ensure_last_cwd(session):
+        return 1
+    touch_last_used(session["id"])
+    if not create_tmux_if_needed(session):
+        return 1
+    return attach_tmux(session)
+
+
+def cmd_list(_: list[str]) -> int:
+    registry = load_registry()
+    print_sessions(registry)
+    return 0
+
+
+def cmd_new(args: list[str]) -> int:
+    try:
+        require_tool("tmux")
+        require_tool("codex")
+    except CdxError as exc:
+        print(f"错误: {exc}")
+        return 1
+    name = " ".join(args).strip() if args else input("cdx_name: ")
+    try:
+        name = validate_name(name)
+    except CdxError as exc:
+        print(f"错误: {exc}")
+        return 1
+    registry = load_registry()
+    existing = find_session_by_name(registry, name)
+    if existing:
+        print(f"会话“{name}”已存在，直接进入。")
+        return enter_session(existing)
+    cwd = choose_session_directory()
+    if not cwd:
+        return 1
+    try:
+        session = create_record(name, cwd)
+    except CdxError as exc:
+        print(f"错误: {exc}")
+        return 1
+    return enter_session(session, unbound_mode="new")
+
+
+def resolve_session_arg(args: list[str], prompt: str) -> dict[str, Any] | None:
+    if args:
+        name = " ".join(args).strip()
+        registry = load_registry()
+        session = find_session_by_name(registry, name)
+        if not session:
+            print(f"未找到会话: {name}")
+            return None
+        return session
+    return choose_cdx_session(prompt)
+
+
+def cmd_enter(args: list[str]) -> int:
+    session = resolve_session_arg(args, "进入哪个会话")
+    if not session:
+        return 1
+    return enter_session(session)
+
+
+def cmd_delete(args: list[str]) -> int:
+    session = resolve_session_arg(args, "删除哪个会话")
+    if not session:
+        return 1
+    live = tmux_exists(session["tmux_session"])
+    print(f"将删除 cdx 会话：{session['name']}")
+    print("- 会从 cdx 列表移除")
+    if live:
+        print("- tmux 正在运行，会被直接关闭并中断 Codex")
+    else:
+        print("- tmux 未运行")
+    print("- 不会删除 Codex 原始会话历史")
+    confirm = input("输入完整会话名确认: ")
+    if confirm != session["name"]:
+        print("确认不匹配，已取消。")
+        return 1
+    if live:
+        subprocess.run(["tmux", "kill-session", "-t", session["tmux_session"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log_event(f"killed tmux session {session['tmux_session']} during delete")
+    with registry_lock():
+        registry = load_registry()
+        registry["sessions"] = [s for s in registry.get("sessions", []) if s.get("id") != session["id"]]
+        save_registry(registry, timestamped_backup=True)
+    log_event(f"deleted cdx session id={session['id']} name={session['name']!r}")
+    print("已删除 cdx 映射。")
+    return 0
+
+
+def cmd_rename(args: list[str]) -> int:
+    if args:
+        old_name = args[0]
+        new_name = " ".join(args[1:]).strip() if len(args) > 1 else input("新的 cdx_name: ")
+        registry = load_registry()
+        session = find_session_by_name(registry, old_name)
+        if not session:
+            print(f"未找到会话: {old_name}")
+            return 1
+    else:
+        session = choose_cdx_session("重命名哪个会话")
+        if not session:
+            return 1
+        new_name = input("新的 cdx_name: ")
+    try:
+        new_name = validate_name(new_name)
+    except CdxError as exc:
+        print(f"错误: {exc}")
+        return 1
+    with registry_lock():
+        registry = load_registry()
+        current = find_session_by_id(registry, session["id"])
+        if not current:
+            print("注册表中找不到该会话。")
+            return 1
+        dup = find_session_by_name(registry, new_name)
+        if dup and dup.get("id") != current["id"]:
+            print(f"会话名已存在: {new_name}")
+            return 1
+        old = current["name"]
+        current["name"] = new_name
+        current["updated_at"] = now_utc()
+        save_registry(registry, timestamped_backup=True)
+    if tmux_exists(session["tmux_session"]):
+        subprocess.run(
+            ["tmux", "rename-window", "-t", f"{session['tmux_session']}:0", short_text(new_name, 30)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    log_event(f"renamed cdx session id={session['id']} {old!r}->{new_name!r}")
+    print(f"已重命名: {old} -> {new_name}")
+    return 0
+
+
+def cmd_roots(args: list[str]) -> int:
+    sub = args[0] if args else ""
+    rest = args[1:] if args else []
+    if sub in {"list", "ls"}:
+        return roots_list()
+    if sub == "add":
+        return roots_add(rest)
+    if sub in {"delete", "del", "rm"}:
+        return roots_delete(rest)
+    if sub in {"rename", "ren", "mv"}:
+        return roots_rename(rest)
+    if sub in {"edit", "path"}:
+        return roots_edit(rest)
+    return roots_menu()
+
+
+def roots_list() -> int:
+    config = load_config()
+    roots = config.get("roots", [])
+    if not roots:
+        print("没有常用目录。")
+        return 0
+    for i, root in enumerate(roots, start=1):
+        print(f"[{i}] {root['name']} {root['path']}")
+    return 0
+
+
+def root_name_exists(config: dict[str, Any], name: str, ignore_id: str | None = None) -> bool:
+    return any(r.get("name") == name and r.get("id") != ignore_id for r in config.get("roots", []))
+
+
+def root_path_exists(config: dict[str, Any], path: str, ignore_id: str | None = None) -> bool:
+    return any(str(normalize_path(r.get("path", ""))) == path and r.get("id") != ignore_id for r in config.get("roots", []))
+
+
+def roots_add(args: list[str]) -> int:
+    name = args[0] if len(args) >= 1 else input("root 名: ")
+    path_raw = args[1] if len(args) >= 2 else input("目录路径: ")
+    try:
+        name = validate_root_name(name)
+    except CdxError as exc:
+        print(f"错误: {exc}")
+        return 1
+    path = normalize_path(path_raw)
+    if not path.exists():
+        if not ask_yes_no(f"目录不存在：{path}，是否创建？", default=False):
+            return 1
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"创建失败: {exc}")
+            return 1
+    if not path.is_dir():
+        print("路径存在但不是目录。")
+        return 1
+    config = load_config()
+    if root_name_exists(config, name):
+        print("root 名已存在。")
+        return 1
+    if root_path_exists(config, str(path)):
+        print("root 路径已存在。")
+        return 1
+    rid = re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-") or secrets.token_hex(3)
+    existing_ids = {r.get("id") for r in config.get("roots", [])}
+    base = rid
+    n = 2
+    while rid in existing_ids:
+        rid = f"{base}-{n}"
+        n += 1
+    config.setdefault("roots", []).append({"id": rid, "name": name, "path": str(path)})
+    save_config(config)
+    print(f"已添加 root: {name} {path}")
+    return 0
+
+
+def choose_root(prompt: str) -> dict[str, Any] | None:
+    config = load_config()
+    roots = config.get("roots", [])
+    if not roots:
+        print("没有常用目录。")
+        return None
+    for i, root in enumerate(roots, start=1):
+        print(f"[{i}] {root['name']} {root['path']}")
+    choice = input(f"{prompt} [编号/名称，空取消]: ").strip()
+    if not choice:
+        return None
+    if choice.isdigit():
+        idx = int(choice)
+        if 1 <= idx <= len(roots):
+            return roots[idx - 1]
+    for root in roots:
+        if root.get("name") == choice:
+            return root
+    print("未找到 root。")
+    return None
+
+
+def roots_delete(args: list[str]) -> int:
+    config = load_config()
+    if len(config.get("roots", [])) <= 1:
+        print("不能删除最后一个常用目录。")
+        return 1
+    if args:
+        target = next((r for r in config.get("roots", []) if r.get("name") == args[0]), None)
+    else:
+        target = choose_root("删除哪个 root")
+    if not target:
+        return 1
+    root_path = normalize_path(target["path"])
+    registry = load_registry()
+    affected = []
+    for session in registry.get("sessions", []):
+        last_cwd = session.get("last_cwd")
+        if not last_cwd:
+            continue
+        try:
+            Path(last_cwd).resolve(strict=False).relative_to(root_path)
+            affected.append(session)
+        except ValueError:
+            pass
+    if affected:
+        print(f"有 {len(affected)} 个会话的 last_cwd 位于该目录下；删除 root 不会删除这些会话或目录。")
+    if not ask_yes_no(f"确认删除 root：{target['name']}？", default=False):
+        return 1
+    config["roots"] = [r for r in config.get("roots", []) if r.get("id") != target.get("id")]
+    save_config(config)
+    print("已删除 root。")
+    return 0
+
+
+def roots_rename(args: list[str]) -> int:
+    config = load_config()
+    if args:
+        target = next((r for r in config.get("roots", []) if r.get("name") == args[0]), None)
+        new_name = " ".join(args[1:]).strip() if len(args) > 1 else input("新的 root 名: ")
+    else:
+        target = choose_root("重命名哪个 root")
+        if not target:
+            return 1
+        new_name = input("新的 root 名: ")
+    if not target:
+        print("未找到 root。")
+        return 1
+    try:
+        new_name = validate_root_name(new_name)
+    except CdxError as exc:
+        print(f"错误: {exc}")
+        return 1
+    if root_name_exists(config, new_name, ignore_id=target["id"]):
+        print("root 名已存在。")
+        return 1
+    old = target["name"]
+    target["name"] = new_name
+    save_config(config)
+    print(f"已重命名 root: {old} -> {new_name}")
+    return 0
+
+
+def roots_edit(args: list[str]) -> int:
+    config = load_config()
+    if args:
+        target = next((r for r in config.get("roots", []) if r.get("name") == args[0]), None)
+        path_raw = args[1] if len(args) > 1 else input("新的目录路径: ")
+    else:
+        target = choose_root("修改哪个 root 路径")
+        if not target:
+            return 1
+        path_raw = input("新的目录路径: ")
+    if not target:
+        print("未找到 root。")
+        return 1
+    path = normalize_path(path_raw)
+    if not path.exists():
+        if not ask_yes_no(f"目录不存在：{path}，是否创建？", default=False):
+            return 1
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"创建失败: {exc}")
+            return 1
+    if not path.is_dir():
+        print("路径存在但不是目录。")
+        return 1
+    if root_path_exists(config, str(path), ignore_id=target["id"]):
+        print("root 路径已存在。")
+        return 1
+    target["path"] = str(path)
+    save_config(config)
+    print("已修改 root 路径。")
+    return 0
+
+
+def roots_menu() -> int:
+    while True:
+        print("\n管理常用目录")
+        print("1. 列出常用目录")
+        print("2. 添加目录")
+        print("3. 删除目录")
+        print("4. 重命名目录")
+        print("5. 修改目录路径")
+        print("0. 返回")
+        choice = input("请选择: ").strip()
+        if choice == "1":
+            roots_list()
+        elif choice == "2":
+            roots_add([])
+        elif choice == "3":
+            roots_delete([])
+        elif choice == "4":
+            roots_rename([])
+        elif choice == "5":
+            roots_edit([])
+        elif choice in {"0", "q", "Q"}:
+            return 0
+        else:
+            print("无效选项。")
+
+
+def load_codex_sessions() -> list[RawCodexSession]:
+    sessions: dict[str, RawCodexSession] = {}
+    if CODEX_SESSION_INDEX.exists():
+        with CODEX_SESSION_INDEX.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                sid = item.get("id")
+                if not sid:
+                    continue
+                sessions[sid] = RawCodexSession(
+                    id=sid,
+                    title=item.get("thread_name") or "(untitled)",
+                    updated_at=item.get("updated_at"),
+                )
+
+    if CODEX_SESSIONS_DIR.exists():
+        for path in CODEX_SESSIONS_DIR.glob("**/*.jsonl"):
+            sid = None
+            title = None
+            cwd = None
+            timestamp = None
+            try:
+                stat_time = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            except OSError:
+                stat_time = None
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    for idx, line in enumerate(f):
+                        if idx > 250 and sid:
+                            break
+                        try:
+                            item = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        payload = item.get("payload", {})
+                        if item.get("type") == "session_meta":
+                            sid = payload.get("id") or sid
+                            cwd = payload.get("cwd") or cwd
+                            timestamp = payload.get("timestamp") or item.get("timestamp") or timestamp
+                        if not title and item.get("type") in {"user_message", "turn_context"}:
+                            title = str(payload)[:80]
+            except OSError:
+                continue
+            if not sid:
+                match = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", path.name)
+                sid = match.group(1) if match else None
+            if not sid:
+                continue
+            existing = sessions.get(sid)
+            if existing:
+                existing.cwd = existing.cwd or cwd
+                existing.transcript_path = existing.transcript_path or str(path)
+                existing.updated_at = existing.updated_at or timestamp or stat_time
+                if existing.title == "(untitled)" and title:
+                    existing.title = title
+            else:
+                sessions[sid] = RawCodexSession(
+                    id=sid,
+                    title=title or "(untitled)",
+                    updated_at=timestamp or stat_time,
+                    cwd=cwd,
+                    transcript_path=str(path),
+                )
+    return sorted(sessions.values(), key=lambda s: sort_key_time(s.updated_at), reverse=True)
+
+
+def choose_raw_codex_session(prompt: str = "选择 Codex 原始会话") -> RawCodexSession | None:
+    raws = load_codex_sessions()
+    if not raws:
+        print("没有找到 Codex 原始会话。")
+        return None
+    registry = load_registry()
+    bound = {s.get("codex_session_id"): s.get("name") for s in registry.get("sessions", []) if s.get("codex_session_id")}
+    for i, raw in enumerate(raws, start=1):
+        marker = f" | bound: {bound[raw.id]}" if raw.id in bound else ""
+        title = short_text(raw.title, 32)
+        print(f"[{i}] {raw.id[:8]}... | {title} | {display_time(raw.updated_at)}{marker}")
+    choice = input(f"{prompt} [编号/UUID，空取消]: ").strip()
+    if not choice:
+        return None
+    if choice.isdigit():
+        idx = int(choice)
+        if 1 <= idx <= len(raws):
+            return raws[idx - 1]
+    for raw in raws:
+        if raw.id == choice or raw.id.startswith(choice):
+            return raw
+    print("未找到 Codex 会话。")
+    return None
+
+
+def map_bind(target_session_id: str | None = None, *, force_transfer: bool = False) -> int:
+    if target_session_id:
+        registry = load_registry()
+        target = find_session_by_id(registry, target_session_id)
+    else:
+        target = choose_cdx_session("绑定到哪个 cdx 会话")
+    if not target:
+        return 1
+    if tmux_exists(target["tmux_session"]):
+        print("该 cdx 会话正在运行，MVP 不允许修改绑定。请先退出 Codex。")
+        return 1
+    raw = choose_raw_codex_session()
+    if not raw:
+        return 1
+    with registry_lock():
+        registry = load_registry()
+        current = find_session_by_id(registry, target["id"])
+        if not current:
+            print("注册表中找不到目标会话。")
+            return 1
+        holder = find_session_by_codex_id(registry, raw.id)
+        if holder and holder.get("id") != current.get("id"):
+            if tmux_exists(holder["tmux_session"]):
+                print(f"该 Codex 会话已绑定到 live 会话：{holder['name']}，不能转移。")
+                return 1
+            if not force_transfer:
+                print(f"该 Codex 会话已绑定到：{holder['name']}")
+                if not ask_yes_no(f"是否转移绑定到：{current['name']}？", default=False):
+                    return 1
+            holder["codex_session_id"] = None
+            holder["transcript_path"] = None
+            holder["updated_at"] = now_utc()
+        if current.get("codex_session_id") and current.get("codex_session_id") != raw.id:
+            if not ask_yes_no("目标会话已有绑定，是否替换？", default=False):
+                return 1
+        current["codex_session_id"] = raw.id
+        if raw.cwd:
+            current["last_cwd"] = raw.cwd
+        current["transcript_path"] = raw.transcript_path
+        current["updated_at"] = now_utc()
+        save_registry(registry, timestamped_backup=True)
+    print("绑定完成。")
+    log_event(f"bound cdx id={target['id']} to codex id={raw.id}")
+    return 0
+
+
+def map_import() -> int:
+    raw = choose_raw_codex_session("导入哪个 Codex 原始会话")
+    if not raw:
+        return 1
+    registry = load_registry()
+    holder = find_session_by_codex_id(registry, raw.id)
+    if holder:
+        print(f"该 Codex 会话已绑定到：{holder['name']}")
+        return 1
+    name = input("新的 cdx_name: ")
+    try:
+        name = validate_name(name)
+    except CdxError as exc:
+        print(f"错误: {exc}")
+        return 1
+    if find_session_by_name(registry, name):
+        print("cdx_name 已存在。")
+        return 1
+    cwd = raw.cwd if raw.cwd and Path(raw.cwd).is_dir() else None
+    if not cwd:
+        print("无法从 Codex 原始会话读取有效 cwd，请选择目录。")
+        cwd = choose_session_directory()
+        if not cwd:
+            return 1
+    try:
+        create_record(name, cwd, codex_session_id=raw.id, transcript_path=raw.transcript_path)
+    except CdxError as exc:
+        print(f"错误: {exc}")
+        return 1
+    print("导入完成。")
+    return 0
+
+
+def map_unbind() -> int:
+    target = choose_cdx_session("解除哪个 cdx 会话的绑定")
+    if not target:
+        return 1
+    if tmux_exists(target["tmux_session"]):
+        print("该 cdx 会话正在运行，MVP 不允许解除绑定。请先退出 Codex。")
+        return 1
+    if not target.get("codex_session_id"):
+        print("该会话没有绑定。")
+        return 0
+    if not ask_yes_no(f"确认解除绑定：{target['name']}？", default=False):
+        return 1
+    with registry_lock():
+        registry = load_registry()
+        current = find_session_by_id(registry, target["id"])
+        if not current:
+            return 1
+        current["codex_session_id"] = None
+        current["transcript_path"] = None
+        current["updated_at"] = now_utc()
+        save_registry(registry, timestamped_backup=True)
+    print("已解除绑定。")
+    return 0
+
+
+def cmd_map(args: list[str]) -> int:
+    sub = args[0] if args else ""
+    if sub == "bind":
+        return map_bind()
+    if sub == "import":
+        return map_import()
+    if sub in {"unbind", "clear"}:
+        return map_unbind()
+    if sub == "transfer":
+        return map_bind(force_transfer=True)
+    return map_menu()
+
+
+def map_menu() -> int:
+    while True:
+        print("\n手动映射/导入")
+        print("1. 绑定已有 Codex 会话到 cdx 会话")
+        print("2. 导入 Codex 会话为新的 cdx 会话")
+        print("3. 解除绑定")
+        print("4. 转移绑定")
+        print("0. 返回")
+        choice = input("请选择: ").strip()
+        if choice == "1":
+            map_bind()
+        elif choice == "2":
+            map_import()
+        elif choice == "3":
+            map_unbind()
+        elif choice == "4":
+            map_bind(force_transfer=True)
+        elif choice in {"0", "q", "Q"}:
+            return 0
+        else:
+            print("无效选项。")
+
+
+def cmd_doctor(_: list[str]) -> int:
+    problems = 0
+    print(f"{APP_NAME} doctor")
+    for label, path in (("配置", CONFIG_PATH), ("注册表", REGISTRY_PATH)):
+        if path.exists():
+            try:
+                load_json(path, {})
+                print(f"OK  {label}: {path}")
+            except Exception as exc:
+                print(f"ERR {label} JSON 无效: {exc}")
+                problems += 1
+        else:
+            print(f"ERR {label} 不存在: {path}")
+            problems += 1
+
+    if is_feature_enabled():
+        print("OK  codex_hooks feature 已启用")
+    else:
+        print("ERR codex_hooks feature 未启用")
+        problems += 1
+    if is_hook_installed():
+        print("OK  SessionStart hook 已安装")
+    else:
+        print("ERR SessionStart hook 未安装")
+        problems += 1
+
+    try:
+        config = load_config()
+        root_names = [r.get("name") for r in config.get("roots", [])]
+        root_paths = [str(normalize_path(r.get("path", ""))) for r in config.get("roots", [])]
+        if len(root_names) != len(set(root_names)):
+            print("ERR root 名重复")
+            problems += 1
+        if len(root_paths) != len(set(root_paths)):
+            print("ERR root 路径重复")
+            problems += 1
+        for root in config.get("roots", []):
+            if Path(root.get("path", "")).expanduser().is_dir():
+                print(f"OK  root: {root.get('name')} {root.get('path')}")
+            else:
+                print(f"WARN root 不存在或不是目录: {root.get('name')} {root.get('path')}")
+    except Exception as exc:
+        print(f"ERR 读取配置失败: {exc}")
+        problems += 1
+
+    raw_ids = {s.id for s in load_codex_sessions()}
+    try:
+        registry = load_registry()
+        names = [s.get("name") for s in registry.get("sessions", [])]
+        codex_ids = [s.get("codex_session_id") for s in registry.get("sessions", []) if s.get("codex_session_id")]
+        if len(names) != len(set(names)):
+            print("ERR cdx_name 重复")
+            problems += 1
+        if len(codex_ids) != len(set(codex_ids)):
+            print("ERR codex_session_id 重复绑定")
+            problems += 1
+        for session in sorted_sessions(registry):
+            prefix = f"{session.get('name')} ({session.get('id')})"
+            status = tmux_status(session)
+            bound = session.get("codex_session_id")
+            print(f"OK  session {prefix}: tmux={status} binding={'yes' if bound else 'no'}")
+            if bound and bound not in raw_ids:
+                print(f"WARN {prefix}: Codex 原始会话不在本地索引/rollout 中: {bound}")
+            cwd = session.get("last_cwd")
+            if cwd and not Path(cwd).is_dir():
+                print(f"WARN {prefix}: last_cwd 不存在: {cwd}")
+    except Exception as exc:
+        print(f"ERR 读取注册表失败: {exc}")
+        problems += 1
+
+    if problems:
+        print(f"doctor 完成，发现 {problems} 个错误。")
+        return 1
+    print("doctor 完成，没有发现阻塞性错误。")
+    return 0
+
+
+def cmd_runner(args: list[str]) -> int:
+    if not args:
+        print("missing cdx id", file=sys.stderr)
+        return 2
+    session_id = args[0]
+    try:
+        registry = load_registry()
+        session = find_session_by_id(registry, session_id)
+        if not session:
+            print(f"cdx runner: 注册表中找不到会话 {session_id}")
+            input("按 Enter 退出...")
+            return 1
+        cwd = session.get("last_cwd") or str(HOME)
+        if not Path(cwd).is_dir():
+            print(f"cdx runner: 工作目录不存在: {cwd}")
+            print("请退出后运行 cdx doctor 或 cdx enter 修复。")
+            input("按 Enter 退出...")
+            return 1
+        os.chdir(cwd)
+        env = os.environ.copy()
+        env["CDX_SESSION_ID"] = session["id"]
+        env["CDX_NAME"] = session["name"]
+        env["CDX_REGISTRY"] = str(REGISTRY_PATH)
+        args = ["codex"]
+        if session.get("codex_session_id"):
+            args = ["codex", "resume", session["codex_session_id"]]
+        log_event(f"runner starting {' '.join(args)} for cdx id={session['id']}")
+        result = subprocess.run(args, env=env)
+        if result.returncode != 0:
+            log_event(f"runner codex exited rc={result.returncode} cdx id={session['id']}")
+            print(f"\nCodex 退出码：{result.returncode}")
+            print("如果是 resume 失败，请运行 cdx map 或 cdx doctor 修复映射。")
+            try:
+                input("按 Enter 退出 tmux...")
+            except EOFError:
+                pass
+        return result.returncode
+    except KeyboardInterrupt:
+        return 130
+
+
+def cmd_hook_session_start(_: list[str]) -> int:
+    cdx_id = os.environ.get("CDX_SESSION_ID")
+    if not cdx_id:
+        return 0
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        log_event(f"hook invalid json cdx_id={cdx_id}: {exc}")
+        return 0
+    codex_id = payload.get("session_id") or payload.get("thread_id") or payload.get("id")
+    if not codex_id:
+        log_event(f"hook missing session_id cdx_id={cdx_id}")
+        return 0
+    cwd = payload.get("cwd")
+    transcript_path = payload.get("transcript_path")
+    source = payload.get("source")
+    with registry_lock():
+        registry = load_registry()
+        session = find_session_by_id(registry, cdx_id)
+        if not session:
+            log_event(f"hook cdx session not found cdx_id={cdx_id} codex_id={codex_id}")
+            return 0
+        existing = session.get("codex_session_id")
+        if existing and existing != codex_id:
+            log_event(f"hook conflict cdx_id={cdx_id} existing={existing} incoming={codex_id} source={source}")
+            return 0
+        ts = now_utc()
+        session["codex_session_id"] = codex_id
+        if cwd:
+            session["last_cwd"] = cwd
+        if transcript_path:
+            session["transcript_path"] = transcript_path
+        session["last_used_at"] = ts
+        session["updated_at"] = ts
+        save_registry(registry)
+    log_event(f"hook mapped cdx_id={cdx_id} codex_id={codex_id} source={source}")
+    return 0
+
+
+def main_menu() -> int:
+    while True:
+        print(f"\n{APP_NAME} (cdx)")
+        print("1. 进入会话")
+        print("2. 新建会话")
+        print("3. 删除会话")
+        print("4. 重命名会话")
+        print("5. 手动映射/导入")
+        print("6. 管理常用目录")
+        print("7. 检查状态 doctor")
+        print("0. 退出")
+        choice = input("请选择: ").strip()
+        if choice == "1":
+            cmd_enter([])
+        elif choice == "2":
+            cmd_new([])
+        elif choice == "3":
+            cmd_delete([])
+        elif choice == "4":
+            cmd_rename([])
+        elif choice == "5":
+            cmd_map([])
+        elif choice == "6":
+            cmd_roots([])
+        elif choice == "7":
+            cmd_doctor([])
+        elif choice in {"0", "q", "Q"}:
+            return 0
+        else:
+            print("无效选项。")
+
+
+def usage() -> str:
+    return """用法:
+  cdx                       打开菜单
+  cdx list                  列出 cdx 会话
+  cdx new [cdx_name]        新建会话；同名则进入
+  cdx enter [cdx_name]      进入会话
+  cdx delete [cdx_name]     删除 cdx 映射并 kill tmux
+  cdx rename [OLD NEW]      重命名
+  cdx roots                 管理常用目录
+  cdx map                   手动映射/导入 Codex 原始会话
+  cdx doctor                只报告状态问题
+  cdx init                  初始化并安装 hook
+  cdx install-hook          安装/刷新 Codex hook
+"""
+
+
+def dispatch(argv: list[str]) -> int:
+    if not argv:
+        if not ensure_initialized():
+            return 1
+        return main_menu()
+    cmd, rest = argv[0], argv[1:]
+    if cmd in {"-h", "--help", "help"}:
+        print(usage())
+        return 0
+    if cmd == "__runner":
+        return cmd_runner(rest)
+    if cmd == "__hook-session-start":
+        return cmd_hook_session_start(rest)
+    if cmd == "init":
+        return cmd_init()
+    if cmd == "install-hook":
+        return 0 if install_hook_interactive(auto=False) else 1
+    if cmd == "doctor":
+        return cmd_doctor(rest)
+    if not ensure_initialized():
+        return 1
+    commands = {
+        "list": cmd_list,
+        "ls": cmd_list,
+        "new": cmd_new,
+        "add": cmd_new,
+        "create": cmd_new,
+        "enter": cmd_enter,
+        "open": cmd_enter,
+        "delete": cmd_delete,
+        "del": cmd_delete,
+        "rm": cmd_delete,
+        "rename": cmd_rename,
+        "ren": cmd_rename,
+        "mv": cmd_rename,
+        "roots": cmd_roots,
+        "root": cmd_roots,
+        "map": cmd_map,
+        "import": lambda a: map_import(),
+    }
+    handler = commands.get(cmd)
+    if not handler:
+        print(f"未知命令: {cmd}")
+        print(usage())
+        return 1
+    return handler(rest)
+
+
+def main() -> int:
+    try:
+        return dispatch(sys.argv[1:])
+    except CdxError as exc:
+        print(f"错误: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print()
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
