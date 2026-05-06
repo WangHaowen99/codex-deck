@@ -1,5 +1,7 @@
 <div align="center" id="codex-deck">
 
+<img src="_image/app_icon.png" alt="Codex Deck App Icon" width="140">
+
 # Codex Deck
 
 A Codex CLI session manager for phone SSH and remote terminals.  
@@ -255,4 +257,3 @@ rm -rf ~/.config/cdx ~/.local/share/cdx ~/.local/state/cdx
 ```
 
 Codex Deck does not delete original Codex conversation history.
-
