@@ -131,6 +131,7 @@ Codex hook writes back the real session id
 | Session list | Shows only cdx-managed sessions, sorted by recent use |
 | New session | Choose a root directory and optionally create a subdirectory |
 | Enter session | Attach to live tmux or resume Codex automatically |
+| UUID lookup | Show the Codex session id bound to a cdx workspace |
 | Delete session | Kill tmux and remove cdx mapping, preserving Codex history |
 | Rename | Supports live sessions |
 | Roots | Manage common root directories |
@@ -228,6 +229,8 @@ cdx                       # open menu
 cdx list                  # list cdx sessions
 cdx new [cdx_name]        # create session; same name enters existing
 cdx enter [cdx_name]      # enter session
+cdx uuid [cdx_name]       # show the bound Codex session id
+cdx uuid --all            # list UUID mappings for all cdx sessions
 cdx delete [cdx_name]     # remove cdx mapping and kill tmux
 cdx rename [OLD NEW]      # rename session
 cdx roots                 # manage common roots
