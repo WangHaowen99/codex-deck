@@ -131,7 +131,7 @@ Codex hook writes back the real session id
 | Session list | Shows only cdx-managed sessions, sorted by recent use |
 | New session | Choose a root directory and optionally create a subdirectory |
 | Enter session | Attach to live tmux or resume Codex automatically |
-| Mouse scrolling | cdx tmux sessions intercept wheel events so Codex does not treat them as arrow keys |
+| Mouse scrolling | cdx refreshes tmux mouse mode and intercepts wheel events so Codex does not treat them as arrow keys |
 | UUID lookup | Show the Codex session id bound to a cdx workspace |
 | Delete session | Kill tmux and remove cdx mapping, preserving Codex history |
 | Rename | Supports live sessions |
