@@ -396,6 +396,24 @@ def tmux_status(session: dict[str, Any]) -> str:
     return "live" if tmux_exists(session["tmux_session"]) else "exited"
 
 
+def configure_tmux_session(tmux_name: str) -> None:
+    if shutil.which("tmux") is None:
+        return
+    options = [
+        ("mouse", "on"),
+        ("remain-on-exit", "off"),
+    ]
+    for option, value in options:
+        result = subprocess.run(
+            ["tmux", "set-option", "-q", "-t", tmux_name, option, value],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0:
+            log_event(f"tmux option failed session={tmux_name} option={option} value={value}: {result.stderr.strip()}")
+
+
 def sorted_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(
         registry.get("sessions", []),
@@ -747,6 +765,7 @@ def create_tmux_if_needed(session: dict[str, Any]) -> bool:
         if not current:
             raise CdxError("注册表中找不到该会话。")
         if tmux_exists(tmux_name):
+            configure_tmux_session(tmux_name)
             return True
         window_name = short_text(current["name"], 30) or "cdx"
         command = f"{shlex.quote(current_cdx_path())} __runner {shlex.quote(current['id'])}"
@@ -759,13 +778,14 @@ def create_tmux_if_needed(session: dict[str, Any]) -> bool:
         if result.returncode != 0:
             print(f"创建 tmux 失败: {result.stderr.strip() or result.stdout.strip()}")
             return False
-        subprocess.run(["tmux", "set-option", "-t", tmux_name, "remain-on-exit", "off"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        configure_tmux_session(tmux_name)
         log_event(f"created tmux session {tmux_name} for cdx id={current['id']}")
         return True
 
 
 def attach_tmux(session: dict[str, Any]) -> int:
     tmux_name = session["tmux_session"]
+    configure_tmux_session(tmux_name)
     if os.environ.get("TMUX"):
         result = subprocess.run(["tmux", "switch-client", "-t", tmux_name])
     else:
