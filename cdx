@@ -833,6 +833,44 @@ def cmd_list(_: list[str]) -> int:
     return 0
 
 
+def print_uuid_detail(session: dict[str, Any]) -> int:
+    print_header("Codex UUID", "这是 cdx 记录的真实 Codex session id。")
+    print(f"  cdx_name:     {bold(session.get('name', ''))}")
+    print(f"  cdx 内部 id:  {dim(session.get('id', ''))}")
+    print(f"  tmux:         {dim(session.get('tmux_session', ''))}  {status_text(tmux_status(session))}")
+    codex_id = session.get("codex_session_id")
+    if codex_id:
+        print(f"  UUID:         {green(codex_id)}")
+        transcript = session.get("transcript_path")
+        if transcript:
+            print(f"  transcript:   {dim(transcript)}")
+        return 0
+    print(f"  UUID:         {yellow('未绑定')}")
+    print()
+    print(dim("  进入一次该会话让 hook 回写 UUID，或使用 cdx map 手动绑定/导入。"))
+    return 1
+
+
+def cmd_uuid(args: list[str]) -> int:
+    registry = load_registry()
+    if args and args[0] == "--all":
+        sessions = sorted_sessions(registry)
+        if not sessions:
+            print_empty("当前没有 cdx 会话。")
+            return 0
+        print_header("Codex UUID", "列出所有 cdx 会话绑定的 Codex session id。")
+        for session in sessions:
+            codex_id = session.get("codex_session_id") or "未绑定"
+            value = green(codex_id) if session.get("codex_session_id") else yellow(codex_id)
+            print(f"  {bold(session.get('name', ''))}")
+            print(f"      {value}")
+        return 0
+    session = resolve_session_arg(args, "查看哪个会话的 UUID")
+    if not session:
+        return 1
+    return print_uuid_detail(session)
+
+
 def cmd_new(args: list[str]) -> int:
     try:
         require_tool("tmux")
@@ -1603,6 +1641,7 @@ def main_menu() -> int:
                 ("5", "手动映射/导入", "绑定、导入、解除或转移 Codex 原始会话"),
                 ("6", "管理常用目录", "维护新建会话时可选的 root"),
                 ("7", "检查状态 doctor", "只报告问题，不自动修复"),
+                ("8", "查看 UUID", "显示 cdx 会话绑定的 Codex session id"),
                 ("0", "退出", "离开 cdx 菜单"),
             ],
             subtitle,
@@ -1623,6 +1662,8 @@ def main_menu() -> int:
             cmd_roots([])
         elif choice == "7":
             cmd_doctor([])
+        elif choice == "8":
+            cmd_uuid([])
         elif choice in {"0", "q", "Q"}:
             return 0
         else:
@@ -1635,6 +1676,8 @@ def usage() -> str:
   cdx list                  列出 cdx 会话
   cdx new [cdx_name]        新建会话；同名则进入
   cdx enter [cdx_name]      进入会话
+  cdx uuid [cdx_name]       查看绑定的 Codex session id
+  cdx uuid --all            列出所有 cdx 会话的绑定 UUID
   cdx delete [cdx_name]     删除 cdx 映射并 kill tmux
   cdx rename [OLD NEW]      重命名
   cdx roots                 管理常用目录
@@ -1674,6 +1717,9 @@ def dispatch(argv: list[str]) -> int:
         "create": cmd_new,
         "enter": cmd_enter,
         "open": cmd_enter,
+        "uuid": cmd_uuid,
+        "id": cmd_uuid,
+        "codex-id": cmd_uuid,
         "delete": cmd_delete,
         "del": cmd_delete,
         "rm": cmd_delete,
