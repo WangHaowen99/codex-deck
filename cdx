@@ -34,13 +34,6 @@ ASCII_BANNER = [
     "| |__| (_) | (_| |  __/>  <  | |_| |  __/ (__|   < ",
     " \\____\\___/ \\__,_|\\___/_/\\_\\ |____/ \\___|\\___|_|\\_\\",
 ]
-ASCII_BANNER_NARROW = [
-    "  ___ ____  __",
-    " / __|  _ \\ \\ \\",
-    "| (__| | | | > >",
-    " \\___|____/ /_/",
-    " Codex Deck",
-]
 
 HOME = Path.home()
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
@@ -126,9 +119,8 @@ def pad_display(text: str, width: int) -> str:
 
 
 def print_banner() -> None:
-    width = ui_width()
-    banner = ASCII_BANNER if width >= 58 else ASCII_BANNER_NARROW
-    for line in banner:
+    width = max(ui_width(), max(display_len(line) for line in ASCII_BANNER))
+    for line in ASCII_BANNER:
         print(cyan(line.center(width)))
 
 
