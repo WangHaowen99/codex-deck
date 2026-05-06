@@ -402,6 +402,7 @@ def configure_tmux_session(tmux_name: str) -> None:
     options = [
         ("mouse", "on"),
         ("remain-on-exit", "off"),
+        ("@cdx_scroll_mode", "tmux-copy-mode"),
     ]
     for option, value in options:
         result = subprocess.run(
@@ -412,6 +413,49 @@ def configure_tmux_session(tmux_name: str) -> None:
         )
         if result.returncode != 0:
             log_event(f"tmux option failed session={tmux_name} option={option} value={value}: {result.stderr.strip()}")
+    install_tmux_mouse_bindings()
+
+
+def install_tmux_mouse_bindings() -> None:
+    if shutil.which("tmux") is None:
+        return
+    bindings = [
+        [
+            "bind-key",
+            "-T",
+            "root",
+            "WheelUpPane",
+            "if-shell",
+            "-F",
+            "-t",
+            "=",
+            "#{==:#{@cdx_scroll_mode},tmux-copy-mode}",
+            "if-shell -F -t = '#{pane_in_mode}' 'send-keys -M' 'copy-mode -e -t ='",
+            "if-shell -F -t = '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -e -t ='",
+        ],
+        [
+            "bind-key",
+            "-T",
+            "root",
+            "WheelDownPane",
+            "if-shell",
+            "-F",
+            "-t",
+            "=",
+            "#{==:#{@cdx_scroll_mode},tmux-copy-mode}",
+            "if-shell -F -t = '#{pane_in_mode}' 'send-keys -M'",
+            "send-keys -M",
+        ],
+    ]
+    for binding in bindings:
+        result = subprocess.run(
+            ["tmux", *binding],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0:
+            log_event(f"tmux mouse binding failed: {' '.join(binding)}: {result.stderr.strip()}")
 
 
 def sorted_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
