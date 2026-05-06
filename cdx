@@ -25,6 +25,7 @@ APP_ID = "cdx"
 VERSION = 1
 MAX_NAME_LEN = 60
 CDX_HOOK_STATUS = "cdx session mapping"
+COLOR_ENABLED = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
 HOME = Path.home()
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
@@ -57,6 +58,84 @@ class RawCodexSession:
     updated_at: str | None = None
     cwd: str | None = None
     transcript_path: str | None = None
+
+
+def color(text: str, code: str) -> str:
+    if not COLOR_ENABLED:
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def bold(text: str) -> str:
+    return color(text, "1")
+
+
+def dim(text: str) -> str:
+    return color(text, "2")
+
+
+def green(text: str) -> str:
+    return color(text, "32")
+
+
+def yellow(text: str) -> str:
+    return color(text, "33")
+
+
+def red(text: str) -> str:
+    return color(text, "31")
+
+
+def cyan(text: str) -> str:
+    return color(text, "36")
+
+
+def ui_width() -> int:
+    columns = shutil.get_terminal_size((72, 20)).columns
+    return max(44, min(columns, 76))
+
+
+def rule() -> str:
+    return dim("─" * ui_width())
+
+
+def print_header(title: str, subtitle: str | None = None) -> None:
+    print()
+    print(bold(title))
+    if subtitle:
+        print(dim(subtitle))
+    print(rule())
+
+
+def print_empty(message: str) -> None:
+    print(dim(f"  {message}"))
+
+
+def prompt(message: str) -> str:
+    return input(cyan("› ") + message).strip()
+
+
+def status_text(value: str) -> str:
+    if value == "live":
+        return green("live")
+    if value == "bound":
+        return cyan("bound")
+    if value in {"unbound", "warn"}:
+        return yellow(value)
+    if value in {"err", "error"}:
+        return red(value)
+    return dim(value)
+
+
+def print_menu(title: str, items: list[tuple[str, str, str]], subtitle: str | None = None) -> None:
+    print_header(title, subtitle)
+    for key, label, desc in items:
+        key_text = cyan(f"{key:>2}")
+        label_text = bold(label)
+        print(f"  {key_text}  {label_text}")
+        if desc:
+            print(f"      {dim(desc)}")
+    print(rule())
 
 
 def ensure_dirs() -> None:
@@ -283,13 +362,16 @@ def short_text(text: str | None, max_len: int = 28) -> str:
 def print_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
     sessions = sorted_sessions(registry)
     if not sessions:
-        print("当前没有 cdx 会话。")
+        print_empty("当前没有 cdx 会话。")
         return []
+    print_header("cdx 会话", "按最近使用时间排序；live 表示 tmux 现场仍在运行。")
     for i, session in enumerate(sessions, start=1):
         status = tmux_status(session)
         bound = "bound" if session.get("codex_session_id") else "unbound"
         used = display_time(session.get("last_used_at") or session.get("created_at"))
-        print(f"[{i}] {short_text(session.get('name'), 24)} | {status} | {bound} | {used}")
+        name = short_text(session.get("name"), 30)
+        print(f"  {cyan(str(i).rjust(2))}  {bold(name)}")
+        print(f"      {status_text(status)}  {status_text(bound)}  {dim(used)}")
     return sessions
 
 
@@ -298,7 +380,7 @@ def choose_from_list(items: list[Any], prompt: str, label_fn) -> Any | None:
         return None
     for i, item in enumerate(items, start=1):
         print(f"[{i}] {label_fn(item)}")
-    choice = input(f"{prompt} [编号/名称，空取消]: ").strip()
+    choice = globals()["prompt"](f"{prompt} [编号/名称，空取消]: ")
     if not choice:
         return None
     if choice.isdigit():
@@ -308,7 +390,7 @@ def choose_from_list(items: list[Any], prompt: str, label_fn) -> Any | None:
     for item in items:
         if label_fn(item) == choice or getattr(item, "id", None) == choice:
             return item
-    print("无效选择。")
+    print(red("无效选择。"))
     return None
 
 
@@ -317,7 +399,7 @@ def choose_cdx_session(prompt: str = "选择 cdx 会话") -> dict[str, Any] | No
     sessions = print_sessions(registry)
     if not sessions:
         return None
-    choice = input(f"{prompt} [编号/名称，空取消]: ").strip()
+    choice = globals()["prompt"](f"{prompt} [编号/名称，空取消]: ")
     if not choice:
         return None
     if choice.isdigit():
@@ -327,13 +409,13 @@ def choose_cdx_session(prompt: str = "选择 cdx 会话") -> dict[str, Any] | No
     for session in sessions:
         if session.get("name") == choice:
             return session
-    print("未找到会话。")
+    print(red("未找到会话。"))
     return None
 
 
 def ask_yes_no(prompt: str, *, default: bool = False) -> bool:
     suffix = "[Y/n]" if default else "[y/N]"
-    answer = input(f"{prompt} {suffix} ").strip().lower()
+    answer = globals()["prompt"](f"{prompt} {suffix} ").lower()
     if not answer:
         return default
     return answer in {"y", "yes"}
@@ -343,9 +425,10 @@ def ensure_last_cwd(session: dict[str, Any]) -> bool:
     cwd = session.get("last_cwd")
     if cwd and Path(cwd).is_dir():
         return True
-    print(f"上次目录不存在：{cwd or '-'}")
+    print_header("工作目录需要确认", "恢复 Codex 前需要一个有效目录。")
+    print(f"  上次目录: {yellow(cwd or '-')}")
     default = str(HOME)
-    raw = input(f"请输入新的目录，空使用 {default}: ").strip() or default
+    raw = prompt(f"请输入新的目录，空使用 {default}: ") or default
     path = normalize_path(raw)
     if not path.exists():
         if not ask_yes_no(f"目录不存在：{path}，是否创建？", default=False):
@@ -353,16 +436,16 @@ def ensure_last_cwd(session: dict[str, Any]) -> bool:
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            print(f"创建目录失败: {exc}")
+            print(red(f"创建目录失败: {exc}"))
             return False
     if not path.is_dir():
-        print("路径存在但不是目录。")
+        print(red("路径存在但不是目录。"))
         return False
     with registry_lock():
         registry = load_registry()
         current = find_session_by_id(registry, session["id"])
         if not current:
-            print("注册表中找不到该会话。")
+            print(red("注册表中找不到该会话。"))
             return False
         current["last_cwd"] = str(path)
         current["updated_at"] = now_utc()
@@ -375,14 +458,16 @@ def choose_session_directory() -> str | None:
     config = load_config()
     roots = config.get("roots", [])
     if not roots:
-        print("没有常用目录，请先添加 root。")
+        print_empty("没有常用目录，请先添加 root。")
         return None
-    print("常用目录：")
+    print_header("选择工作目录", "先选择常用目录；可再输入相对文件夹名，空表示直接使用该目录。")
     for i, root in enumerate(roots, start=1):
-        print(f"[{i}] {root['name']} {root['path']}")
-    raw = input("选择常用目录编号: ").strip()
+        print(f"  {cyan(str(i).rjust(2))}  {bold(root['name'])}")
+        print(f"      {dim(root['path'])}")
+    print(rule())
+    raw = prompt("选择常用目录编号: ")
     if not raw.isdigit() or not (1 <= int(raw) <= len(roots)):
-        print("无效选择。")
+        print(red("无效选择。"))
         return None
     root_path = normalize_path(roots[int(raw) - 1]["path"])
     if not root_path.exists():
@@ -391,26 +476,26 @@ def choose_session_directory() -> str | None:
         try:
             root_path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            print(f"创建常用目录失败: {exc}")
+            print(red(f"创建常用目录失败: {exc}"))
             return None
     if not root_path.is_dir():
-        print(f"常用目录不是目录：{root_path}")
+        print(red(f"常用目录不是目录：{root_path}"))
         return None
-    child_raw = input("新建文件夹名（可空；支持 a/b/c）: ")
+    child_raw = prompt("新建文件夹名（可空；支持 a/b/c）: ")
     try:
         child = validate_child_path(child_raw)
     except CdxError as exc:
-        print(f"错误: {exc}")
+        print(red(f"错误: {exc}"))
         return None
     final_path = root_path if child is None else root_path / child
     if final_path.exists() and not final_path.is_dir():
-        print(f"路径存在但不是目录：{final_path}")
+        print(red(f"路径存在但不是目录：{final_path}"))
         return None
     if not final_path.exists():
         try:
             final_path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            print(f"创建目录失败: {exc}")
+            print(red(f"创建目录失败: {exc}"))
             return None
     return str(final_path.resolve(strict=False))
 
@@ -659,11 +744,16 @@ def enter_session(session: dict[str, Any], *, unbound_mode: str = "prompt") -> i
         if unbound_mode == "new":
             pass
         else:
-            print(f"会话“{session['name']}”还没有绑定 Codex 原始会话。")
-            print("[1] 新建 Codex 会话并绑定")
-            print("[2] 绑定已有 Codex 会话")
-            print("[3] 取消")
-            choice = input("请选择: ").strip()
+            print_menu(
+                f"未绑定: {session['name']}",
+                [
+                    ("1", "新建 Codex 会话并绑定", "启动新的 Codex TUI，hook 会回写 session id"),
+                    ("2", "绑定已有 Codex 会话", "从 Codex 原始历史里选择一个会话"),
+                    ("3", "取消", "返回上一级"),
+                ],
+                "该 cdx 会话还没有绑定 Codex 原始会话。",
+            )
+            choice = prompt("请选择: ")
             if choice == "2":
                 if map_bind(target_session_id=session["id"]) == 0:
                     with registry_lock():
@@ -676,7 +766,7 @@ def enter_session(session: dict[str, Any], *, unbound_mode: str = "prompt") -> i
                 else:
                     return 1
             elif choice != "1":
-                print("已取消。")
+                print(dim("已取消。"))
                 return 1
     if not ensure_last_cwd(session):
         return 1
@@ -697,18 +787,18 @@ def cmd_new(args: list[str]) -> int:
         require_tool("tmux")
         require_tool("codex")
     except CdxError as exc:
-        print(f"错误: {exc}")
+        print(red(f"错误: {exc}"))
         return 1
-    name = " ".join(args).strip() if args else input("cdx_name: ")
+    name = " ".join(args).strip() if args else prompt("cdx_name: ")
     try:
         name = validate_name(name)
     except CdxError as exc:
-        print(f"错误: {exc}")
+        print(red(f"错误: {exc}"))
         return 1
     registry = load_registry()
     existing = find_session_by_name(registry, name)
     if existing:
-        print(f"会话“{name}”已存在，直接进入。")
+        print(cyan(f"会话“{name}”已存在，直接进入。"))
         return enter_session(existing)
     cwd = choose_session_directory()
     if not cwd:
@@ -716,7 +806,7 @@ def cmd_new(args: list[str]) -> int:
     try:
         session = create_record(name, cwd)
     except CdxError as exc:
-        print(f"错误: {exc}")
+        print(red(f"错误: {exc}"))
         return 1
     return enter_session(session, unbound_mode="new")
 
@@ -727,7 +817,7 @@ def resolve_session_arg(args: list[str], prompt: str) -> dict[str, Any] | None:
         registry = load_registry()
         session = find_session_by_name(registry, name)
         if not session:
-            print(f"未找到会话: {name}")
+            print(red(f"未找到会话: {name}"))
             return None
         return session
     return choose_cdx_session(prompt)
@@ -745,16 +835,20 @@ def cmd_delete(args: list[str]) -> int:
     if not session:
         return 1
     live = tmux_exists(session["tmux_session"])
-    print(f"将删除 cdx 会话：{session['name']}")
-    print("- 会从 cdx 列表移除")
+    print_header("删除确认", "该操作会删除 cdx 映射，不会删除 Codex 原始历史。")
+    print(f"  会话: {bold(session['name'])}")
+    print(f"  tmux: {status_text('live') if live else dim('exited')}")
+    print()
+    print("  将执行:")
+    print("  - 从 cdx 列表移除")
     if live:
-        print("- tmux 正在运行，会被直接关闭并中断 Codex")
+        print("  - tmux 正在运行，会被直接关闭并中断 Codex")
     else:
-        print("- tmux 未运行")
-    print("- 不会删除 Codex 原始会话历史")
-    confirm = input("输入完整会话名确认: ")
+        print("  - tmux 未运行")
+    print("  - 不会删除 Codex 原始会话历史")
+    confirm = prompt("输入完整会话名确认: ")
     if confirm != session["name"]:
-        print("确认不匹配，已取消。")
+        print(yellow("确认不匹配，已取消。"))
         return 1
     if live:
         subprocess.run(["tmux", "kill-session", "-t", session["tmux_session"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -764,38 +858,38 @@ def cmd_delete(args: list[str]) -> int:
         registry["sessions"] = [s for s in registry.get("sessions", []) if s.get("id") != session["id"]]
         save_registry(registry, timestamped_backup=True)
     log_event(f"deleted cdx session id={session['id']} name={session['name']!r}")
-    print("已删除 cdx 映射。")
+    print(green("已删除 cdx 映射。"))
     return 0
 
 
 def cmd_rename(args: list[str]) -> int:
     if args:
         old_name = args[0]
-        new_name = " ".join(args[1:]).strip() if len(args) > 1 else input("新的 cdx_name: ")
+        new_name = " ".join(args[1:]).strip() if len(args) > 1 else prompt("新的 cdx_name: ")
         registry = load_registry()
         session = find_session_by_name(registry, old_name)
         if not session:
-            print(f"未找到会话: {old_name}")
+            print(red(f"未找到会话: {old_name}"))
             return 1
     else:
         session = choose_cdx_session("重命名哪个会话")
         if not session:
             return 1
-        new_name = input("新的 cdx_name: ")
+        new_name = prompt("新的 cdx_name: ")
     try:
         new_name = validate_name(new_name)
     except CdxError as exc:
-        print(f"错误: {exc}")
+        print(red(f"错误: {exc}"))
         return 1
     with registry_lock():
         registry = load_registry()
         current = find_session_by_id(registry, session["id"])
         if not current:
-            print("注册表中找不到该会话。")
+            print(red("注册表中找不到该会话。"))
             return 1
         dup = find_session_by_name(registry, new_name)
         if dup and dup.get("id") != current["id"]:
-            print(f"会话名已存在: {new_name}")
+            print(red(f"会话名已存在: {new_name}"))
             return 1
         old = current["name"]
         current["name"] = new_name
@@ -808,7 +902,7 @@ def cmd_rename(args: list[str]) -> int:
             stderr=subprocess.DEVNULL,
         )
     log_event(f"renamed cdx session id={session['id']} {old!r}->{new_name!r}")
-    print(f"已重命名: {old} -> {new_name}")
+    print(green(f"已重命名: {old} -> {new_name}"))
     return 0
 
 
@@ -832,10 +926,14 @@ def roots_list() -> int:
     config = load_config()
     roots = config.get("roots", [])
     if not roots:
-        print("没有常用目录。")
+        print_empty("没有常用目录。")
         return 0
+    print_header("常用目录", "新建会话时会从这些 root 中选择工作目录。")
     for i, root in enumerate(roots, start=1):
-        print(f"[{i}] {root['name']} {root['path']}")
+        path = root["path"]
+        path_status = "" if Path(path).expanduser().is_dir() else f" {yellow('missing')}"
+        print(f"  {cyan(str(i).rjust(2))}  {bold(root['name'])}{path_status}")
+        print(f"      {dim(path)}")
     return 0
 
 
@@ -848,12 +946,12 @@ def root_path_exists(config: dict[str, Any], path: str, ignore_id: str | None = 
 
 
 def roots_add(args: list[str]) -> int:
-    name = args[0] if len(args) >= 1 else input("root 名: ")
-    path_raw = args[1] if len(args) >= 2 else input("目录路径: ")
+    name = args[0] if len(args) >= 1 else prompt("root 名: ")
+    path_raw = args[1] if len(args) >= 2 else prompt("目录路径: ")
     try:
         name = validate_root_name(name)
     except CdxError as exc:
-        print(f"错误: {exc}")
+        print(red(f"错误: {exc}"))
         return 1
     path = normalize_path(path_raw)
     if not path.exists():
@@ -862,17 +960,17 @@ def roots_add(args: list[str]) -> int:
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            print(f"创建失败: {exc}")
+            print(red(f"创建失败: {exc}"))
             return 1
     if not path.is_dir():
-        print("路径存在但不是目录。")
+        print(red("路径存在但不是目录。"))
         return 1
     config = load_config()
     if root_name_exists(config, name):
-        print("root 名已存在。")
+        print(red("root 名已存在。"))
         return 1
     if root_path_exists(config, str(path)):
-        print("root 路径已存在。")
+        print(red("root 路径已存在。"))
         return 1
     rid = re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-") or secrets.token_hex(3)
     existing_ids = {r.get("id") for r in config.get("roots", [])}
@@ -883,7 +981,7 @@ def roots_add(args: list[str]) -> int:
         n += 1
     config.setdefault("roots", []).append({"id": rid, "name": name, "path": str(path)})
     save_config(config)
-    print(f"已添加 root: {name} {path}")
+    print(green(f"已添加 root: {name} {path}"))
     return 0
 
 
@@ -891,11 +989,14 @@ def choose_root(prompt: str) -> dict[str, Any] | None:
     config = load_config()
     roots = config.get("roots", [])
     if not roots:
-        print("没有常用目录。")
+        print_empty("没有常用目录。")
         return None
+    print_header("常用目录")
     for i, root in enumerate(roots, start=1):
-        print(f"[{i}] {root['name']} {root['path']}")
-    choice = input(f"{prompt} [编号/名称，空取消]: ").strip()
+        print(f"  {cyan(str(i).rjust(2))}  {bold(root['name'])}")
+        print(f"      {dim(root['path'])}")
+    print(rule())
+    choice = globals()["prompt"](f"{prompt} [编号/名称，空取消]: ")
     if not choice:
         return None
     if choice.isdigit():
@@ -905,14 +1006,14 @@ def choose_root(prompt: str) -> dict[str, Any] | None:
     for root in roots:
         if root.get("name") == choice:
             return root
-    print("未找到 root。")
+    print(red("未找到 root。"))
     return None
 
 
 def roots_delete(args: list[str]) -> int:
     config = load_config()
     if len(config.get("roots", [])) <= 1:
-        print("不能删除最后一个常用目录。")
+        print(yellow("不能删除最后一个常用目录。"))
         return 1
     if args:
         target = next((r for r in config.get("roots", []) if r.get("name") == args[0]), None)
@@ -933,12 +1034,12 @@ def roots_delete(args: list[str]) -> int:
         except ValueError:
             pass
     if affected:
-        print(f"有 {len(affected)} 个会话的 last_cwd 位于该目录下；删除 root 不会删除这些会话或目录。")
+        print(yellow(f"有 {len(affected)} 个会话的 last_cwd 位于该目录下；删除 root 不会删除这些会话或目录。"))
     if not ask_yes_no(f"确认删除 root：{target['name']}？", default=False):
         return 1
     config["roots"] = [r for r in config.get("roots", []) if r.get("id") != target.get("id")]
     save_config(config)
-    print("已删除 root。")
+    print(green("已删除 root。"))
     return 0
 
 
@@ -946,27 +1047,27 @@ def roots_rename(args: list[str]) -> int:
     config = load_config()
     if args:
         target = next((r for r in config.get("roots", []) if r.get("name") == args[0]), None)
-        new_name = " ".join(args[1:]).strip() if len(args) > 1 else input("新的 root 名: ")
+        new_name = " ".join(args[1:]).strip() if len(args) > 1 else prompt("新的 root 名: ")
     else:
         target = choose_root("重命名哪个 root")
         if not target:
             return 1
-        new_name = input("新的 root 名: ")
+        new_name = prompt("新的 root 名: ")
     if not target:
-        print("未找到 root。")
+        print(red("未找到 root。"))
         return 1
     try:
         new_name = validate_root_name(new_name)
     except CdxError as exc:
-        print(f"错误: {exc}")
+        print(red(f"错误: {exc}"))
         return 1
     if root_name_exists(config, new_name, ignore_id=target["id"]):
-        print("root 名已存在。")
+        print(red("root 名已存在。"))
         return 1
     old = target["name"]
     target["name"] = new_name
     save_config(config)
-    print(f"已重命名 root: {old} -> {new_name}")
+    print(green(f"已重命名 root: {old} -> {new_name}"))
     return 0
 
 
@@ -974,14 +1075,14 @@ def roots_edit(args: list[str]) -> int:
     config = load_config()
     if args:
         target = next((r for r in config.get("roots", []) if r.get("name") == args[0]), None)
-        path_raw = args[1] if len(args) > 1 else input("新的目录路径: ")
+        path_raw = args[1] if len(args) > 1 else prompt("新的目录路径: ")
     else:
         target = choose_root("修改哪个 root 路径")
         if not target:
             return 1
-        path_raw = input("新的目录路径: ")
+        path_raw = prompt("新的目录路径: ")
     if not target:
-        print("未找到 root。")
+        print(red("未找到 root。"))
         return 1
     path = normalize_path(path_raw)
     if not path.exists():
@@ -990,30 +1091,34 @@ def roots_edit(args: list[str]) -> int:
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            print(f"创建失败: {exc}")
+            print(red(f"创建失败: {exc}"))
             return 1
     if not path.is_dir():
-        print("路径存在但不是目录。")
+        print(red("路径存在但不是目录。"))
         return 1
     if root_path_exists(config, str(path), ignore_id=target["id"]):
-        print("root 路径已存在。")
+        print(red("root 路径已存在。"))
         return 1
     target["path"] = str(path)
     save_config(config)
-    print("已修改 root 路径。")
+    print(green("已修改 root 路径。"))
     return 0
 
 
 def roots_menu() -> int:
     while True:
-        print("\n管理常用目录")
-        print("1. 列出常用目录")
-        print("2. 添加目录")
-        print("3. 删除目录")
-        print("4. 重命名目录")
-        print("5. 修改目录路径")
-        print("0. 返回")
-        choice = input("请选择: ").strip()
+        print_menu(
+            "管理常用目录",
+            [
+                ("1", "列出常用目录", "查看新建会话时可选的 root"),
+                ("2", "添加目录", "添加一个新的 root"),
+                ("3", "删除目录", "不会删除已有会话或真实目录"),
+                ("4", "重命名目录", "只改显示名"),
+                ("5", "修改目录路径", "更新 root 指向的位置"),
+                ("0", "返回", "回到主菜单"),
+            ],
+        )
+        choice = prompt("请选择: ")
         if choice == "1":
             roots_list()
         elif choice == "2":
@@ -1027,7 +1132,7 @@ def roots_menu() -> int:
         elif choice in {"0", "q", "Q"}:
             return 0
         else:
-            print("无效选项。")
+            print(red("无效选项。"))
 
 
 def load_codex_sessions() -> list[RawCodexSession]:
@@ -1102,15 +1207,18 @@ def load_codex_sessions() -> list[RawCodexSession]:
 def choose_raw_codex_session(prompt: str = "选择 Codex 原始会话") -> RawCodexSession | None:
     raws = load_codex_sessions()
     if not raws:
-        print("没有找到 Codex 原始会话。")
+        print_empty("没有找到 Codex 原始会话。")
         return None
     registry = load_registry()
     bound = {s.get("codex_session_id"): s.get("name") for s in registry.get("sessions", []) if s.get("codex_session_id")}
+    print_header("Codex 原始会话", "按最近更新时间排序；bound 表示已被 cdx 管理。")
     for i, raw in enumerate(raws, start=1):
-        marker = f" | bound: {bound[raw.id]}" if raw.id in bound else ""
+        marker = f"  {status_text('bound')}: {short_text(bound[raw.id], 18)}" if raw.id in bound else ""
         title = short_text(raw.title, 32)
-        print(f"[{i}] {raw.id[:8]}... | {title} | {display_time(raw.updated_at)}{marker}")
-    choice = input(f"{prompt} [编号/UUID，空取消]: ").strip()
+        print(f"  {cyan(str(i).rjust(2))}  {bold(title)}")
+        print(f"      {dim(raw.id[:8] + '...')}  {dim(display_time(raw.updated_at))}{marker}")
+    print(rule())
+    choice = globals()["prompt"](f"{prompt} [编号/UUID，空取消]: ")
     if not choice:
         return None
     if choice.isdigit():
@@ -1120,7 +1228,7 @@ def choose_raw_codex_session(prompt: str = "选择 Codex 原始会话") -> RawCo
     for raw in raws:
         if raw.id == choice or raw.id.startswith(choice):
             return raw
-    print("未找到 Codex 会话。")
+    print(red("未找到 Codex 会话。"))
     return None
 
 
@@ -1133,7 +1241,7 @@ def map_bind(target_session_id: str | None = None, *, force_transfer: bool = Fal
     if not target:
         return 1
     if tmux_exists(target["tmux_session"]):
-        print("该 cdx 会话正在运行，MVP 不允许修改绑定。请先退出 Codex。")
+        print(yellow("该 cdx 会话正在运行，MVP 不允许修改绑定。请先退出 Codex。"))
         return 1
     raw = choose_raw_codex_session()
     if not raw:
@@ -1142,15 +1250,15 @@ def map_bind(target_session_id: str | None = None, *, force_transfer: bool = Fal
         registry = load_registry()
         current = find_session_by_id(registry, target["id"])
         if not current:
-            print("注册表中找不到目标会话。")
+            print(red("注册表中找不到目标会话。"))
             return 1
         holder = find_session_by_codex_id(registry, raw.id)
         if holder and holder.get("id") != current.get("id"):
             if tmux_exists(holder["tmux_session"]):
-                print(f"该 Codex 会话已绑定到 live 会话：{holder['name']}，不能转移。")
+                print(yellow(f"该 Codex 会话已绑定到 live 会话：{holder['name']}，不能转移。"))
                 return 1
             if not force_transfer:
-                print(f"该 Codex 会话已绑定到：{holder['name']}")
+                print(yellow(f"该 Codex 会话已绑定到：{holder['name']}"))
                 if not ask_yes_no(f"是否转移绑定到：{current['name']}？", default=False):
                     return 1
             holder["codex_session_id"] = None
@@ -1165,7 +1273,7 @@ def map_bind(target_session_id: str | None = None, *, force_transfer: bool = Fal
         current["transcript_path"] = raw.transcript_path
         current["updated_at"] = now_utc()
         save_registry(registry, timestamped_backup=True)
-    print("绑定完成。")
+    print(green("绑定完成。"))
     log_event(f"bound cdx id={target['id']} to codex id={raw.id}")
     return 0
 
@@ -1177,29 +1285,29 @@ def map_import() -> int:
     registry = load_registry()
     holder = find_session_by_codex_id(registry, raw.id)
     if holder:
-        print(f"该 Codex 会话已绑定到：{holder['name']}")
+        print(yellow(f"该 Codex 会话已绑定到：{holder['name']}"))
         return 1
-    name = input("新的 cdx_name: ")
+    name = prompt("新的 cdx_name: ")
     try:
         name = validate_name(name)
     except CdxError as exc:
-        print(f"错误: {exc}")
+        print(red(f"错误: {exc}"))
         return 1
     if find_session_by_name(registry, name):
-        print("cdx_name 已存在。")
+        print(red("cdx_name 已存在。"))
         return 1
     cwd = raw.cwd if raw.cwd and Path(raw.cwd).is_dir() else None
     if not cwd:
-        print("无法从 Codex 原始会话读取有效 cwd，请选择目录。")
+        print(yellow("无法从 Codex 原始会话读取有效 cwd，请选择目录。"))
         cwd = choose_session_directory()
         if not cwd:
             return 1
     try:
         create_record(name, cwd, codex_session_id=raw.id, transcript_path=raw.transcript_path)
     except CdxError as exc:
-        print(f"错误: {exc}")
+        print(red(f"错误: {exc}"))
         return 1
-    print("导入完成。")
+    print(green("导入完成。"))
     return 0
 
 
@@ -1208,10 +1316,10 @@ def map_unbind() -> int:
     if not target:
         return 1
     if tmux_exists(target["tmux_session"]):
-        print("该 cdx 会话正在运行，MVP 不允许解除绑定。请先退出 Codex。")
+        print(yellow("该 cdx 会话正在运行，MVP 不允许解除绑定。请先退出 Codex。"))
         return 1
     if not target.get("codex_session_id"):
-        print("该会话没有绑定。")
+        print(dim("该会话没有绑定。"))
         return 0
     if not ask_yes_no(f"确认解除绑定：{target['name']}？", default=False):
         return 1
@@ -1224,7 +1332,7 @@ def map_unbind() -> int:
         current["transcript_path"] = None
         current["updated_at"] = now_utc()
         save_registry(registry, timestamped_backup=True)
-    print("已解除绑定。")
+    print(green("已解除绑定。"))
     return 0
 
 
@@ -1243,13 +1351,17 @@ def cmd_map(args: list[str]) -> int:
 
 def map_menu() -> int:
     while True:
-        print("\n手动映射/导入")
-        print("1. 绑定已有 Codex 会话到 cdx 会话")
-        print("2. 导入 Codex 会话为新的 cdx 会话")
-        print("3. 解除绑定")
-        print("4. 转移绑定")
-        print("0. 返回")
-        choice = input("请选择: ").strip()
+        print_menu(
+            "手动映射/导入",
+            [
+                ("1", "绑定已有 Codex 会话", "把原始 Codex session id 绑定到已有 cdx 会话"),
+                ("2", "导入为新的 cdx 会话", "从 Codex 历史创建一个新的 cdx_name"),
+                ("3", "解除绑定", "保留 cdx 会话，但清空 Codex session id"),
+                ("4", "转移绑定", "将 Codex session id 从旧 cdx 转到新 cdx"),
+                ("0", "返回", "回到主菜单"),
+            ],
+        )
+        choice = prompt("请选择: ")
         if choice == "1":
             map_bind()
         elif choice == "2":
@@ -1261,33 +1373,33 @@ def map_menu() -> int:
         elif choice in {"0", "q", "Q"}:
             return 0
         else:
-            print("无效选项。")
+            print(red("无效选项。"))
 
 
 def cmd_doctor(_: list[str]) -> int:
     problems = 0
-    print(f"{APP_NAME} doctor")
+    print_header(f"{APP_NAME} doctor", "只报告问题，不自动修改状态。")
     for label, path in (("配置", CONFIG_PATH), ("注册表", REGISTRY_PATH)):
         if path.exists():
             try:
                 load_json(path, {})
-                print(f"OK  {label}: {path}")
+                print(f"{green('OK ')} {label}: {dim(str(path))}")
             except Exception as exc:
-                print(f"ERR {label} JSON 无效: {exc}")
+                print(f"{red('ERR')} {label} JSON 无效: {exc}")
                 problems += 1
         else:
-            print(f"ERR {label} 不存在: {path}")
+            print(f"{red('ERR')} {label} 不存在: {path}")
             problems += 1
 
     if is_feature_enabled():
-        print("OK  codex_hooks feature 已启用")
+        print(f"{green('OK ')} codex_hooks feature 已启用")
     else:
-        print("ERR codex_hooks feature 未启用")
+        print(f"{red('ERR')} codex_hooks feature 未启用")
         problems += 1
     if is_hook_installed():
-        print("OK  SessionStart hook 已安装")
+        print(f"{green('OK ')} SessionStart hook 已安装")
     else:
-        print("ERR SessionStart hook 未安装")
+        print(f"{red('ERR')} SessionStart hook 未安装")
         problems += 1
 
     try:
@@ -1295,18 +1407,18 @@ def cmd_doctor(_: list[str]) -> int:
         root_names = [r.get("name") for r in config.get("roots", [])]
         root_paths = [str(normalize_path(r.get("path", ""))) for r in config.get("roots", [])]
         if len(root_names) != len(set(root_names)):
-            print("ERR root 名重复")
+            print(f"{red('ERR')} root 名重复")
             problems += 1
         if len(root_paths) != len(set(root_paths)):
-            print("ERR root 路径重复")
+            print(f"{red('ERR')} root 路径重复")
             problems += 1
         for root in config.get("roots", []):
             if Path(root.get("path", "")).expanduser().is_dir():
-                print(f"OK  root: {root.get('name')} {root.get('path')}")
+                print(f"{green('OK ')} root: {bold(root.get('name'))} {dim(root.get('path'))}")
             else:
-                print(f"WARN root 不存在或不是目录: {root.get('name')} {root.get('path')}")
+                print(f"{yellow('WARN')} root 不存在或不是目录: {root.get('name')} {root.get('path')}")
     except Exception as exc:
-        print(f"ERR 读取配置失败: {exc}")
+        print(f"{red('ERR')} 读取配置失败: {exc}")
         problems += 1
 
     raw_ids = {s.id for s in load_codex_sessions()}
@@ -1315,29 +1427,32 @@ def cmd_doctor(_: list[str]) -> int:
         names = [s.get("name") for s in registry.get("sessions", [])]
         codex_ids = [s.get("codex_session_id") for s in registry.get("sessions", []) if s.get("codex_session_id")]
         if len(names) != len(set(names)):
-            print("ERR cdx_name 重复")
+            print(f"{red('ERR')} cdx_name 重复")
             problems += 1
         if len(codex_ids) != len(set(codex_ids)):
-            print("ERR codex_session_id 重复绑定")
+            print(f"{red('ERR')} codex_session_id 重复绑定")
             problems += 1
         for session in sorted_sessions(registry):
             prefix = f"{session.get('name')} ({session.get('id')})"
             status = tmux_status(session)
             bound = session.get("codex_session_id")
-            print(f"OK  session {prefix}: tmux={status} binding={'yes' if bound else 'no'}")
+            binding = "yes" if bound else "no"
+            print(f"{green('OK ')} session {bold(prefix)}: tmux={status_text(status)} binding={status_text('bound') if bound else dim(binding)}")
             if bound and bound not in raw_ids:
-                print(f"WARN {prefix}: Codex 原始会话不在本地索引/rollout 中: {bound}")
+                print(f"{yellow('WARN')} {prefix}: Codex 原始会话不在本地索引/rollout 中: {bound}")
             cwd = session.get("last_cwd")
             if cwd and not Path(cwd).is_dir():
-                print(f"WARN {prefix}: last_cwd 不存在: {cwd}")
+                print(f"{yellow('WARN')} {prefix}: last_cwd 不存在: {cwd}")
     except Exception as exc:
-        print(f"ERR 读取注册表失败: {exc}")
+        print(f"{red('ERR')} 读取注册表失败: {exc}")
         problems += 1
 
     if problems:
-        print(f"doctor 完成，发现 {problems} 个错误。")
+        print(rule())
+        print(red(f"doctor 完成，发现 {problems} 个错误。"))
         return 1
-    print("doctor 完成，没有发现阻塞性错误。")
+    print(rule())
+    print(green("doctor 完成，没有发现阻塞性错误。"))
     return 0
 
 
@@ -1423,16 +1538,25 @@ def cmd_hook_session_start(_: list[str]) -> int:
 
 def main_menu() -> int:
     while True:
-        print(f"\n{APP_NAME} (cdx)")
-        print("1. 进入会话")
-        print("2. 新建会话")
-        print("3. 删除会话")
-        print("4. 重命名会话")
-        print("5. 手动映射/导入")
-        print("6. 管理常用目录")
-        print("7. 检查状态 doctor")
-        print("0. 退出")
-        choice = input("请选择: ").strip()
+        registry = load_registry()
+        count = len(registry.get("sessions", []))
+        live_count = sum(1 for session in registry.get("sessions", []) if tmux_exists(session["tmux_session"]))
+        subtitle = f"{count} 个 cdx 会话 · {live_count} 个 live tmux · 手机 SSH 友好"
+        print_menu(
+            f"{APP_NAME} (cdx)",
+            [
+                ("1", "进入会话", "attach 到 live tmux，或自动 resume Codex"),
+                ("2", "新建会话", "选择常用目录，创建一个新的 Codex 工作台"),
+                ("3", "删除会话", "kill tmux 并删除 cdx 映射，不删 Codex 历史"),
+                ("4", "重命名会话", "修改用途名，live 会话也支持"),
+                ("5", "手动映射/导入", "绑定、导入、解除或转移 Codex 原始会话"),
+                ("6", "管理常用目录", "维护新建会话时可选的 root"),
+                ("7", "检查状态 doctor", "只报告问题，不自动修复"),
+                ("0", "退出", "离开 cdx 菜单"),
+            ],
+            subtitle,
+        )
+        choice = prompt("请选择: ")
         if choice == "1":
             cmd_enter([])
         elif choice == "2":
@@ -1450,7 +1574,7 @@ def main_menu() -> int:
         elif choice in {"0", "q", "Q"}:
             return 0
         else:
-            print("无效选项。")
+            print(red("无效选项。"))
 
 
 def usage() -> str:
