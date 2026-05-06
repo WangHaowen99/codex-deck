@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,6 +27,13 @@ VERSION = 1
 MAX_NAME_LEN = 60
 CDX_HOOK_STATUS = "cdx session mapping"
 COLOR_ENABLED = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+ASCII_BANNER = [
+    "  ____          _             ____            _    ",
+    " / ___|___   __| | _____  __ |  _ \\  ___  ___| | __",
+    "| |   / _ \\ / _` |/ _ \\ \\/ / | | | |/ _ \\/ __| |/ /",
+    "| |__| (_) | (_| |  __/>  <  | |_| |  __/ (__|   < ",
+    " \\____\\___/ \\__,_|\\___/_/\\_\\ |____/ \\___|\\___|_|\\_\\",
+]
 
 HOME = Path.home()
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
@@ -92,15 +100,38 @@ def cyan(text: str) -> str:
 
 def ui_width() -> int:
     columns = shutil.get_terminal_size((72, 20)).columns
-    return max(44, min(columns, 76))
+    return max(44, min(columns, 104))
 
 
 def rule() -> str:
     return dim("─" * ui_width())
 
 
-def print_header(title: str, subtitle: str | None = None) -> None:
+def display_len(text: str) -> int:
+    width = 0
+    for ch in text:
+        width += 2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
+    return width
+
+
+def pad_display(text: str, width: int) -> str:
+    return text + " " * max(0, width - display_len(text))
+
+
+def print_banner() -> None:
+    width = ui_width()
+    if width < 58:
+        print(cyan(bold("Codex Deck")))
+        return
+    for line in ASCII_BANNER:
+        print(cyan(line.center(width)))
+
+
+def print_header(title: str, subtitle: str | None = None, *, banner: bool = False) -> None:
     print()
+    if banner:
+        print_banner()
+        print()
     print(bold(title))
     if subtitle:
         print(dim(subtitle))
@@ -127,14 +158,23 @@ def status_text(value: str) -> str:
     return dim(value)
 
 
-def print_menu(title: str, items: list[tuple[str, str, str]], subtitle: str | None = None) -> None:
-    print_header(title, subtitle)
+def print_menu(title: str, items: list[tuple[str, str, str]], subtitle: str | None = None, *, banner: bool = False) -> None:
+    print_header(title, subtitle, banner=banner)
+    width = ui_width()
+    desktop = width >= 78
+    label_width = min(22, max((display_len(label) for _, label, _ in items), default=0))
     for key, label, desc in items:
         key_text = cyan(f"{key:>2}")
-        label_text = bold(label)
-        print(f"  {key_text}  {label_text}")
-        if desc:
-            print(f"      {dim(desc)}")
+        if desktop:
+            label_text = bold(pad_display(label, label_width))
+            desc_text = dim(desc)
+            print(f"  {key_text}  {label_text}      {desc_text}")
+        else:
+            label_text = bold(label)
+            print(f"  {key_text}  {label_text}")
+            if desc:
+                print(f"          {dim(desc)}")
+            print()
     print(rule())
 
 
@@ -1555,6 +1595,7 @@ def main_menu() -> int:
                 ("0", "退出", "离开 cdx 菜单"),
             ],
             subtitle,
+            banner=True,
         )
         choice = prompt("请选择: ")
         if choice == "1":
