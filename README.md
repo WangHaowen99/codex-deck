@@ -154,6 +154,7 @@ Codex hook 回写真实 session id
 | 会话列表 | 只展示 cdx 管理的会话，按最近使用时间排序 |
 | 新建会话 | 输入全局唯一用途名，选择常用目录，可选创建子目录 |
 | 进入会话 | 优先 attach 到 live tmux，否则自动 resume Codex |
+| UUID 查询 | 直接显示某个 cdx 会话绑定的 Codex session id |
 | 删除会话 | kill 对应 tmux，删除 cdx 映射，不删除 Codex 原始历史 |
 | 重命名 | 支持中文和空格，live 会话也可重命名 |
 | 常用目录 | 管理新建会话时可选的 root 目录 |
@@ -256,6 +257,8 @@ cdx                       # 打开菜单
 cdx list                  # 列出 cdx 会话
 cdx new [cdx_name]        # 新建会话；同名则进入
 cdx enter [cdx_name]      # 进入会话
+cdx uuid [cdx_name]       # 查看绑定的 Codex session id
+cdx uuid --all            # 列出所有 cdx 会话的绑定 UUID
 cdx delete [cdx_name]     # 删除 cdx 映射并 kill tmux
 cdx rename [OLD NEW]      # 重命名
 cdx roots                 # 管理常用目录
