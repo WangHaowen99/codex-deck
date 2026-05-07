@@ -1,4 +1,6 @@
 __pycache__/
 *.py[cod]
 .DS_Store
-
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/*.vsix

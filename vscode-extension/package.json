@@ -1,0 +1,138 @@
+{
+  "name": "codex-deck",
+  "displayName": "Codex Deck",
+  "description": "Manage Codex Deck sessions from the VS Code sidebar.",
+  "version": "0.1.0",
+  "publisher": "codex-deck",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.86.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onView:codexDeck.sessions",
+    "onCommand:codexDeck.refresh",
+    "onCommand:codexDeck.newSession",
+    "onCommand:codexDeck.openSession",
+    "onCommand:codexDeck.deleteSession",
+    "onCommand:codexDeck.renameSession",
+    "onCommand:codexDeck.copyUuid"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Codex Deck",
+      "properties": {
+        "codexDeck.cdxPath": {
+          "type": "string",
+          "default": "cdx",
+          "description": "Path to the cdx executable on the remote/workspace host."
+        },
+        "codexDeck.defaultCwd": {
+          "type": "string",
+          "default": "",
+          "description": "Default working directory for new Codex Deck sessions. Empty uses the first workspace folder or the remote home directory."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codexDeck",
+          "title": "Codex Deck",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "codexDeck": [
+        {
+          "id": "codexDeck.sessions",
+          "name": "Sessions"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "codexDeck.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "codexDeck.newSession",
+        "title": "New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "codexDeck.openSession",
+        "title": "Open Session",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "codexDeck.renameSession",
+        "title": "Rename Session",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "codexDeck.deleteSession",
+        "title": "Delete Session",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "codexDeck.copyUuid",
+        "title": "Copy Codex UUID",
+        "icon": "$(copy)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "codexDeck.newSession",
+          "when": "view == codexDeck.sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codexDeck.refresh",
+          "when": "view == codexDeck.sessions",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "codexDeck.openSession",
+          "when": "view == codexDeck.sessions && viewItem == cdxSession",
+          "group": "inline@1"
+        },
+        {
+          "command": "codexDeck.renameSession",
+          "when": "view == codexDeck.sessions && viewItem == cdxSession",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codexDeck.copyUuid",
+          "when": "view == codexDeck.sessions && viewItem == cdxSession",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codexDeck.deleteSession",
+          "when": "view == codexDeck.sessions && viewItem == cdxSession",
+          "group": "navigation@9"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.86.0",
+    "typescript": "^5.3.3"
+  }
+}

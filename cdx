@@ -502,6 +502,73 @@ def print_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
     return sessions
 
 
+def emit_json(data: dict[str, Any]) -> None:
+    json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+
+
+def session_json(session: dict[str, Any], *, include_status: bool = True) -> dict[str, Any]:
+    data = {
+        "id": session.get("id"),
+        "name": session.get("name"),
+        "tmux_session": session.get("tmux_session"),
+        "codex_session_id": session.get("codex_session_id"),
+        "bound": bool(session.get("codex_session_id")),
+        "last_cwd": session.get("last_cwd"),
+        "created_at": session.get("created_at"),
+        "updated_at": session.get("updated_at"),
+        "last_used_at": session.get("last_used_at"),
+        "transcript_path": session.get("transcript_path"),
+    }
+    if include_status:
+        data["tmux_status"] = tmux_status(session)
+    return data
+
+
+def print_error(message: str, *, json_mode: bool = False) -> None:
+    if json_mode:
+        emit_json({"ok": False, "error": message})
+    else:
+        print(red(message))
+
+
+def take_flag(args: list[str], flag: str) -> bool:
+    found = False
+    kept = []
+    for arg in args:
+        if arg == flag:
+            found = True
+        else:
+            kept.append(arg)
+    args[:] = kept
+    return found
+
+
+def take_option(args: list[str], option: str) -> str | None:
+    for i, arg in enumerate(list(args)):
+        if arg == option:
+            if i + 1 >= len(args):
+                raise CdxError(f"{option} 需要参数。")
+            value = args[i + 1]
+            del args[i : i + 2]
+            return value
+        prefix = option + "="
+        if arg.startswith(prefix):
+            value = arg[len(prefix) :]
+            del args[i]
+            return value
+    return None
+
+
+def ensure_cwd_path(raw: str) -> str:
+    path = normalize_path(raw)
+    if not path.exists():
+        path.mkdir(parents=True, exist_ok=True)
+    if not path.is_dir():
+        raise CdxError(f"工作目录不是目录: {path}")
+    return str(path)
+
+
 def choose_from_list(items: list[Any], prompt: str, label_fn) -> Any | None:
     if not items:
         return None
@@ -905,8 +972,22 @@ def enter_session(session: dict[str, Any], *, unbound_mode: str = "prompt") -> i
     return attach_tmux(session)
 
 
-def cmd_list(_: list[str]) -> int:
+def cmd_list(args: list[str]) -> int:
+    args = list(args)
+    json_mode = take_flag(args, "--json")
+    if args:
+        print_error(f"未知参数: {' '.join(args)}", json_mode=json_mode)
+        return 1
     registry = load_registry()
+    if json_mode:
+        emit_json(
+            {
+                "ok": True,
+                "version": VERSION,
+                "sessions": [session_json(session) for session in sorted_sessions(registry)],
+            }
+        )
+        return 0
     print_sessions(registry)
     return 0
 
@@ -930,9 +1011,31 @@ def print_uuid_detail(session: dict[str, Any]) -> int:
 
 
 def cmd_uuid(args: list[str]) -> int:
+    args = list(args)
+    json_mode = take_flag(args, "--json")
     registry = load_registry()
     if args and args[0] == "--all":
+        args = args[1:]
+        if args:
+            print_error(f"未知参数: {' '.join(args)}", json_mode=json_mode)
+            return 1
         sessions = sorted_sessions(registry)
+        if json_mode:
+            emit_json(
+                {
+                    "ok": True,
+                    "sessions": [
+                        {
+                            "id": session.get("id"),
+                            "name": session.get("name"),
+                            "codex_session_id": session.get("codex_session_id"),
+                            "bound": bool(session.get("codex_session_id")),
+                        }
+                        for session in sessions
+                    ],
+                }
+            )
+            return 0
         if not sessions:
             print_empty("当前没有 cdx 会话。")
             return 0
@@ -943,80 +1046,142 @@ def cmd_uuid(args: list[str]) -> int:
             print(f"  {bold(session.get('name', ''))}")
             print(f"      {value}")
         return 0
-    session = resolve_session_arg(args, "查看哪个会话的 UUID")
+    session = resolve_session_arg(args, "查看哪个会话的 UUID", noninteractive=json_mode, json_mode=json_mode)
     if not session:
         return 1
+    if json_mode:
+        emit_json(
+            {
+                "ok": True,
+                "id": session.get("id"),
+                "name": session.get("name"),
+                "codex_session_id": session.get("codex_session_id"),
+                "bound": bool(session.get("codex_session_id")),
+                "transcript_path": session.get("transcript_path"),
+            }
+        )
+        return 0
     return print_uuid_detail(session)
 
 
 def cmd_new(args: list[str]) -> int:
+    args = list(args)
+    json_mode = take_flag(args, "--json")
+    no_enter = take_flag(args, "--no-enter") or json_mode
+    try:
+        cwd_arg = take_option(args, "--cwd")
+    except CdxError as exc:
+        print_error(f"错误: {exc}", json_mode=json_mode)
+        return 1
     try:
         require_tool("tmux")
         require_tool("codex")
     except CdxError as exc:
-        print(red(f"错误: {exc}"))
+        print_error(f"错误: {exc}", json_mode=json_mode)
         return 1
-    name = " ".join(args).strip() if args else prompt("cdx_name: ")
+    if args:
+        name = " ".join(args).strip()
+    elif no_enter:
+        print_error("缺少 cdx_name。", json_mode=json_mode)
+        return 1
+    else:
+        name = prompt("cdx_name: ")
     try:
         name = validate_name(name)
     except CdxError as exc:
-        print(red(f"错误: {exc}"))
+        print_error(f"错误: {exc}", json_mode=json_mode)
         return 1
     registry = load_registry()
     existing = find_session_by_name(registry, name)
     if existing:
+        if json_mode:
+            emit_json({"ok": True, "existing": True, "session": session_json(existing)})
+            return 0
         print(cyan(f"会话“{name}”已存在，直接进入。"))
+        if no_enter:
+            return 0
         return enter_session(existing)
-    cwd = choose_session_directory()
-    if not cwd:
-        return 1
+    if cwd_arg is not None:
+        try:
+            cwd = ensure_cwd_path(cwd_arg)
+        except (CdxError, OSError) as exc:
+            print_error(f"错误: {exc}", json_mode=json_mode)
+            return 1
+    else:
+        if no_enter:
+            print_error("非交互新建会话需要 --cwd。", json_mode=json_mode)
+            return 1
+        cwd = choose_session_directory()
+        if not cwd:
+            return 1
     try:
         session = create_record(name, cwd)
     except CdxError as exc:
-        print(red(f"错误: {exc}"))
+        print_error(f"错误: {exc}", json_mode=json_mode)
         return 1
+    if json_mode:
+        emit_json({"ok": True, "existing": False, "session": session_json(session)})
+    if no_enter:
+        return 0
     return enter_session(session, unbound_mode="new")
 
 
-def resolve_session_arg(args: list[str], prompt: str) -> dict[str, Any] | None:
+def resolve_session_arg(args: list[str], prompt: str, *, noninteractive: bool = False, json_mode: bool = False) -> dict[str, Any] | None:
     if args:
         name = " ".join(args).strip()
         registry = load_registry()
         session = find_session_by_name(registry, name)
         if not session:
-            print(red(f"未找到会话: {name}"))
+            print_error(f"未找到会话: {name}", json_mode=json_mode)
             return None
         return session
+    if noninteractive:
+        print_error("缺少 cdx_name。", json_mode=json_mode)
+        return None
     return choose_cdx_session(prompt)
 
 
 def cmd_enter(args: list[str]) -> int:
-    session = resolve_session_arg(args, "进入哪个会话")
+    args = list(args)
+    print_command = take_flag(args, "--print-command")
+    new_if_unbound = take_flag(args, "--new-if-unbound")
+    session = resolve_session_arg(args, "进入哪个会话", noninteractive=print_command)
     if not session:
         return 1
-    return enter_session(session)
+    if print_command:
+        flags = " --new-if-unbound" if new_if_unbound else ""
+        print(f"{shlex.quote(current_cdx_path())} enter{flags} {shlex.quote(session['name'])}")
+        return 0
+    return enter_session(session, unbound_mode="new" if new_if_unbound else "prompt")
 
 
 def cmd_delete(args: list[str]) -> int:
-    session = resolve_session_arg(args, "删除哪个会话")
+    args = list(args)
+    json_mode = take_flag(args, "--json")
+    yes = take_flag(args, "--yes")
+    noninteractive = json_mode or yes
+    session = resolve_session_arg(args, "删除哪个会话", noninteractive=noninteractive, json_mode=json_mode)
     if not session:
         return 1
     live = tmux_exists(session["tmux_session"])
-    print_header("删除确认", "该操作会删除 cdx 映射，不会删除 Codex 原始历史。")
-    print(f"  会话: {bold(session['name'])}")
-    print(f"  tmux: {status_text('live') if live else dim('exited')}")
-    print()
-    print("  将执行:")
-    print("  - 从 cdx 列表移除")
-    if live:
-        print("  - tmux 正在运行，会被直接关闭并中断 Codex")
+    if not yes:
+        print_header("删除确认", "该操作会删除 cdx 映射，不会删除 Codex 原始历史。")
+        print(f"  会话: {bold(session['name'])}")
+        print(f"  tmux: {status_text('live') if live else dim('exited')}")
+        print()
+        print("  将执行:")
+        print("  - 从 cdx 列表移除")
+        if live:
+            print("  - tmux 正在运行，会被直接关闭并中断 Codex")
+        else:
+            print("  - tmux 未运行")
+        print("  - 不会删除 Codex 原始会话历史")
+        confirm = prompt("输入完整会话名确认: ")
+        if confirm != session["name"]:
+            print(yellow("确认不匹配，已取消。"))
+            return 1
     else:
-        print("  - tmux 未运行")
-    print("  - 不会删除 Codex 原始会话历史")
-    confirm = prompt("输入完整会话名确认: ")
-    if confirm != session["name"]:
-        print(yellow("确认不匹配，已取消。"))
-        return 1
+        log_event(f"delete confirmed by --yes cdx id={session['id']} name={session['name']!r}")
     if live:
         subprocess.run(["tmux", "kill-session", "-t", session["tmux_session"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         log_event(f"killed tmux session {session['tmux_session']} during delete")
@@ -1025,20 +1190,31 @@ def cmd_delete(args: list[str]) -> int:
         registry["sessions"] = [s for s in registry.get("sessions", []) if s.get("id") != session["id"]]
         save_registry(registry, timestamped_backup=True)
     log_event(f"deleted cdx session id={session['id']} name={session['name']!r}")
+    if json_mode:
+        emit_json({"ok": True, "killed_tmux": live, "session": session_json(session, include_status=False)})
+        return 0
     print(green("已删除 cdx 映射。"))
     return 0
 
 
 def cmd_rename(args: list[str]) -> int:
+    args = list(args)
+    json_mode = take_flag(args, "--json")
     if args:
+        if len(args) < 2:
+            print_error("用法: cdx rename [--json] OLD NEW", json_mode=json_mode)
+            return 1
         old_name = args[0]
         new_name = " ".join(args[1:]).strip() if len(args) > 1 else prompt("新的 cdx_name: ")
         registry = load_registry()
         session = find_session_by_name(registry, old_name)
         if not session:
-            print(red(f"未找到会话: {old_name}"))
+            print_error(f"未找到会话: {old_name}", json_mode=json_mode)
             return 1
     else:
+        if json_mode:
+            print_error("缺少 OLD 和 NEW。", json_mode=True)
+            return 1
         session = choose_cdx_session("重命名哪个会话")
         if not session:
             return 1
@@ -1046,21 +1222,23 @@ def cmd_rename(args: list[str]) -> int:
     try:
         new_name = validate_name(new_name)
     except CdxError as exc:
-        print(red(f"错误: {exc}"))
+        print_error(f"错误: {exc}", json_mode=json_mode)
         return 1
+    renamed_session: dict[str, Any] | None = None
     with registry_lock():
         registry = load_registry()
         current = find_session_by_id(registry, session["id"])
         if not current:
-            print(red("注册表中找不到该会话。"))
+            print_error("注册表中找不到该会话。", json_mode=json_mode)
             return 1
         dup = find_session_by_name(registry, new_name)
         if dup and dup.get("id") != current["id"]:
-            print(red(f"会话名已存在: {new_name}"))
+            print_error(f"会话名已存在: {new_name}", json_mode=json_mode)
             return 1
         old = current["name"]
         current["name"] = new_name
         current["updated_at"] = now_utc()
+        renamed_session = dict(current)
         save_registry(registry, timestamped_backup=True)
     if tmux_exists(session["tmux_session"]):
         subprocess.run(
@@ -1069,6 +1247,9 @@ def cmd_rename(args: list[str]) -> int:
             stderr=subprocess.DEVNULL,
         )
     log_event(f"renamed cdx session id={session['id']} {old!r}->{new_name!r}")
+    if json_mode:
+        emit_json({"ok": True, "old_name": old, "session": session_json(renamed_session or session)})
+        return 0
     print(green(f"已重命名: {old} -> {new_name}"))
     return 0
 
@@ -1752,12 +1933,16 @@ def usage() -> str:
     return """用法:
   cdx                       打开菜单
   cdx list                  列出 cdx 会话
+  cdx list --json           输出机器可读会话列表
   cdx new [cdx_name]        新建会话；同名则进入
+  cdx new --cwd PATH --no-enter --json [cdx_name]
   cdx enter [cdx_name]      进入会话
+  cdx enter --new-if-unbound [cdx_name]
+  cdx enter --print-command [cdx_name]
   cdx uuid [cdx_name]       查看绑定的 Codex session id
   cdx uuid --all            列出所有 cdx 会话的绑定 UUID
-  cdx delete [cdx_name]     删除 cdx 映射并 kill tmux
-  cdx rename [OLD NEW]      重命名
+  cdx delete [--yes] [cdx_name]
+  cdx rename [--json] OLD NEW
   cdx roots                 管理常用目录
   cdx map                   手动映射/导入 Codex 原始会话
   cdx doctor                只报告状态问题
