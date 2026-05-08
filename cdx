@@ -25,6 +25,7 @@ APP_NAME = "Codex Deck"
 APP_ID = "cdx"
 VERSION = 1
 MAX_NAME_LEN = 60
+RAW_IMPORT_PREVIEW_LIMIT = 30
 CDX_HOOK_STATUS = "cdx session mapping"
 COLOR_ENABLED = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 ASCII_BANNER = [
@@ -484,6 +485,73 @@ def short_text(text: str | None, max_len: int = 28) -> str:
     if not text:
         return ""
     return text if len(text) <= max_len else text[: max_len - 1] + "…"
+
+
+def short_display_text(text: str | None, max_width: int) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned or max_width <= 0:
+        return ""
+    if display_len(cleaned) <= max_width:
+        return cleaned
+    if max_width <= 1:
+        return "…"
+    limit = max_width - 1
+    width = 0
+    pieces: list[str] = []
+    for ch in cleaned:
+        ch_width = 2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
+        if width + ch_width > limit:
+            break
+        pieces.append(ch)
+        width += ch_width
+    trimmed = "".join(pieces).rstrip()
+    return (trimmed + "…") if trimmed else "…"
+
+
+def compact_uuid(text: str | None) -> str:
+    if not text:
+        return ""
+    value = text.strip()
+    if len(value) <= 15:
+        return value
+    return f"{value[:8]}...{value[-4:]}"
+
+
+def normalize_preview_text(text: str | None) -> str:
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def user_visible_conversation_text(text: str | None) -> str:
+    cleaned = normalize_preview_text(text)
+    if not cleaned:
+        return ""
+    internal_prefixes = (
+        "<environment_context>",
+        "<permissions instructions>",
+        "<collaboration_mode>",
+        "<skills_instructions>",
+    )
+    return "" if cleaned.startswith(internal_prefixes) else cleaned
+
+
+def extract_message_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    pieces = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") in {"input_text", "output_text", "text"}:
+            text = item.get("text")
+            if isinstance(text, str):
+                pieces.append(text)
+    return " ".join(pieces)
 
 
 def print_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1560,11 +1628,30 @@ def choose_raw_codex_session(prompt: str = "选择 Codex 原始会话") -> RawCo
     registry = load_registry()
     bound = {s.get("codex_session_id"): s.get("name") for s in registry.get("sessions", []) if s.get("codex_session_id")}
     print_header("Codex 原始会话", "按最近更新时间排序；bound 表示已被 cdx 管理。")
+    width = ui_width()
+    index_width = max(2, len(str(len(raws))))
+    row_indent = " " * (4 + index_width)
+    title_width = max(12, width - (4 + index_width))
+    narrow = width < 78
     for i, raw in enumerate(raws, start=1):
-        marker = f"  {status_text('bound')}: {short_text(bound[raw.id], 18)}" if raw.id in bound else ""
-        title = short_text(raw.title, 32)
-        print(f"  {cyan(str(i).rjust(2))}  {bold(title)}")
-        print(f"      {dim(raw.id[:8] + '...')}  {dim(display_time(raw.updated_at))}{marker}")
+        bound_name = bound.get(raw.id)
+        title = short_display_text(raw.title, title_width)
+        raw_id = compact_uuid(raw.id)
+        time_text = display_time(raw.updated_at)
+        print(f"  {cyan(str(i).rjust(index_width))}  {bold(title)}")
+        meta = f"id: {raw_id}  {time_text}"
+        if not narrow and bound_name:
+            bound_text = short_display_text(bound_name, max(8, width - (4 + index_width) - display_len(meta) - 10))
+            if display_len(meta) + 10 + display_len(bound_text) <= width - (4 + index_width):
+                print(f"{row_indent}{dim(meta)}  {status_text('bound')}: {dim(bound_text)}")
+            else:
+                print(f"{row_indent}{dim(meta)}")
+                print(f"{row_indent}{status_text('bound')}: {dim(bound_text)}")
+            continue
+        print(f"{row_indent}{dim(meta)}")
+        if bound_name:
+            bound_text = short_display_text(bound_name, max(8, width - (4 + index_width) - display_len("bound: ")))
+            print(f"{row_indent}{status_text('bound')}: {dim(bound_text)}")
     print(rule())
     choice = globals()["prompt"](f"{prompt} [编号/UUID，空取消]: ")
     if not choice:
@@ -1574,6 +1661,88 @@ def choose_raw_codex_session(prompt: str = "选择 Codex 原始会话") -> RawCo
         if 1 <= idx <= len(raws):
             return raws[idx - 1]
     for raw in raws:
+        if raw.id == choice or raw.id.startswith(choice):
+            return raw
+    print(red("未找到 Codex 会话。"))
+    return None
+
+
+def raw_conversation_preview(raw: RawCodexSession, *, limit: int = 2) -> list[str]:
+    user_snippets: list[str] = []
+    assistant_snippets: list[str] = []
+    seen: set[str] = set()
+    if raw.transcript_path and Path(raw.transcript_path).exists():
+        try:
+            with Path(raw.transcript_path).open("r", encoding="utf-8") as f:
+                for idx, line in enumerate(f):
+                    if idx > 800 and (user_snippets or assistant_snippets):
+                        break
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    payload = item.get("payload", {})
+                    text = ""
+                    role = ""
+                    if item.get("type") == "event_msg" and payload.get("type") in {"user_message", "agent_message"}:
+                        text = user_visible_conversation_text(payload.get("message"))
+                        role = "user" if payload.get("type") == "user_message" else "assistant"
+                    elif item.get("type") == "response_item" and payload.get("type") == "message" and payload.get("role") in {"user", "assistant"}:
+                        text = user_visible_conversation_text(extract_message_content_text(payload.get("content")))
+                        role = payload.get("role", "")
+                    if text and text not in seen:
+                        if role == "user":
+                            user_snippets.append(text)
+                        elif role == "assistant":
+                            assistant_snippets.append(text)
+                        seen.add(text)
+                    if user_snippets and assistant_snippets:
+                        break
+        except OSError:
+            pass
+    if user_snippets:
+        snippets = [user_snippets[0]]
+        if assistant_snippets:
+            snippets.append(assistant_snippets[0])
+        elif len(user_snippets) > 1:
+            snippets.append(user_snippets[1])
+        return snippets[:limit]
+    if assistant_snippets:
+        return assistant_snippets[:limit]
+    fallback = user_visible_conversation_text(raw.title)
+    return [fallback] if fallback else ["(无可预览内容)"]
+
+
+def choose_raw_codex_session_for_import(prompt: str = "导入哪个 Codex 对话") -> RawCodexSession | None:
+    raws = load_codex_sessions()
+    if not raws:
+        print_empty("没有找到 Codex 原始会话。")
+        return None
+    registry = load_registry()
+    bound_ids = {s.get("codex_session_id") for s in registry.get("sessions", []) if s.get("codex_session_id")}
+    importable = [raw for raw in raws if raw.id not in bound_ids][:RAW_IMPORT_PREVIEW_LIMIT]
+    if not importable:
+        print_empty("没有可导入的未绑定 Codex 原始会话。")
+        return None
+    print_header("导入 Codex 对话", f"显示最近 {RAW_IMPORT_PREVIEW_LIMIT} 次未管理的 Codex 对话；只显示对话内容。")
+    width = ui_width()
+    index_width = max(2, len(str(len(importable))))
+    row_indent = " " * (4 + index_width)
+    content_width = max(12, width - (4 + index_width))
+    for i, raw in enumerate(importable, start=1):
+        snippets = raw_conversation_preview(raw, limit=2)
+        print(f"  {cyan(str(i).rjust(index_width))}  {bold(short_display_text(snippets[0], content_width))}")
+        for snippet in snippets[1:]:
+            print(f"{row_indent}{dim(short_display_text(snippet, content_width))}")
+    print(rule())
+    choice = globals()["prompt"](f"{prompt} [编号，空取消]: ")
+    if not choice:
+        return None
+    if choice.isdigit():
+        idx = int(choice)
+        if 1 <= idx <= len(importable):
+            return importable[idx - 1]
+    for raw in importable:
         if raw.id == choice or raw.id.startswith(choice):
             return raw
     print(red("未找到 Codex 会话。"))
@@ -1627,14 +1796,10 @@ def map_bind(target_session_id: str | None = None, *, force_transfer: bool = Fal
 
 
 def map_import() -> int:
-    raw = choose_raw_codex_session("导入哪个 Codex 原始会话")
+    raw = choose_raw_codex_session_for_import()
     if not raw:
         return 1
     registry = load_registry()
-    holder = find_session_by_codex_id(registry, raw.id)
-    if holder:
-        print(yellow(f"该 Codex 会话已绑定到：{holder['name']}"))
-        return 1
     name = prompt("新的 cdx_name: ")
     try:
         name = validate_name(name)
