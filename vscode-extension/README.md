@@ -11,6 +11,9 @@ It does not reimplement Codex Deck. It calls the remote/workspace `cdx` command:
 - `cdx enter <cdx_name>`
 - `cdx enter --new-if-unbound <cdx_name>`
 
+Unread Codex results are shown in the session description. When `cdx list --json`
+reports `unread: true`, the tree item uses a red dot icon.
+
 ## Development
 
 ```bash

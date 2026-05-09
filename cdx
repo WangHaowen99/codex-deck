@@ -519,6 +519,58 @@ def compact_uuid(text: str | None) -> str:
     return f"{value[:8]}...{value[-4:]}"
 
 
+def path_mtime_iso(path: str | None) -> str | None:
+    if not path:
+        return None
+    try:
+        mtime = Path(path).stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(mtime, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def later_time(left: str | None, right: str | None) -> str | None:
+    left_dt = parse_iso(left)
+    right_dt = parse_iso(right)
+    if left_dt and right_dt:
+        return left if left_dt >= right_dt else right
+    return left if left_dt else right
+
+
+def session_conversation_updated_at(session: dict[str, Any]) -> str | None:
+    return path_mtime_iso(session.get("transcript_path"))
+
+
+def session_viewed_at(session: dict[str, Any]) -> str | None:
+    return session.get("last_viewed_at") or session.get("last_used_at") or session.get("created_at")
+
+
+def session_has_unread_result(session: dict[str, Any]) -> bool:
+    if not session.get("codex_session_id"):
+        return False
+    updated_at = session_conversation_updated_at(session)
+    if not updated_at:
+        return False
+    viewed_at = session_viewed_at(session)
+    if not viewed_at:
+        return True
+    updated_dt = parse_iso(updated_at)
+    viewed_dt = parse_iso(viewed_at)
+    if not updated_dt:
+        return False
+    if not viewed_dt:
+        return True
+    return updated_dt > viewed_dt
+
+
+def view_state_text(session: dict[str, Any]) -> str:
+    if not session.get("codex_session_id"):
+        return dim("no-result")
+    if session_has_unread_result(session):
+        return red("● unread")
+    return dim("viewed")
+
+
 def normalize_preview_text(text: str | None) -> str:
     if not text:
         return ""
@@ -559,14 +611,14 @@ def print_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
     if not sessions:
         print_empty("当前没有 cdx 会话。")
         return []
-    print_header("cdx 会话", "按最近使用时间排序；live 表示 tmux 现场仍在运行。")
+    print_header("cdx 会话", "按最近使用时间排序；live 表示 tmux 现场仍在运行；● unread 表示有未查看结果。")
     for i, session in enumerate(sessions, start=1):
         status = tmux_status(session)
         bound = "bound" if session.get("codex_session_id") else "unbound"
         used = display_time(session.get("last_used_at") or session.get("created_at"))
         name = short_text(session.get("name"), 30)
         print(f"  {cyan(str(i).rjust(2))}  {bold(name)}")
-        print(f"      {status_text(status)}  {status_text(bound)}  {dim(used)}")
+        print(f"      {status_text(status)}  {status_text(bound)}  {view_state_text(session)}  {dim(used)}")
     return sessions
 
 
@@ -576,12 +628,16 @@ def emit_json(data: dict[str, Any]) -> None:
 
 
 def session_json(session: dict[str, Any], *, include_status: bool = True) -> dict[str, Any]:
+    conversation_updated_at = session_conversation_updated_at(session)
     data = {
         "id": session.get("id"),
         "name": session.get("name"),
         "tmux_session": session.get("tmux_session"),
         "codex_session_id": session.get("codex_session_id"),
         "bound": bool(session.get("codex_session_id")),
+        "unread": session_has_unread_result(session),
+        "last_viewed_at": session.get("last_viewed_at"),
+        "conversation_updated_at": conversation_updated_at,
         "last_cwd": session.get("last_cwd"),
         "created_at": session.get("created_at"),
         "updated_at": session.get("updated_at"),
@@ -940,6 +996,7 @@ def create_record(name: str, cwd: str, codex_session_id: str | None = None, tran
             "created_at": created,
             "updated_at": created,
             "last_used_at": created,
+            "last_viewed_at": later_time(created, path_mtime_iso(transcript_path)),
             "transcript_path": transcript_path,
         }
         registry["sessions"].append(session)
@@ -988,7 +1045,7 @@ def attach_tmux(session: dict[str, Any]) -> int:
     return result.returncode
 
 
-def touch_last_used(session_id: str) -> None:
+def touch_last_used(session_id: str, *, mark_viewed: bool = False) -> None:
     with registry_lock():
         registry = load_registry()
         session = find_session_by_id(registry, session_id)
@@ -997,12 +1054,14 @@ def touch_last_used(session_id: str) -> None:
         ts = now_utc()
         session["last_used_at"] = ts
         session["updated_at"] = ts
+        if mark_viewed:
+            session["last_viewed_at"] = later_time(ts, session_conversation_updated_at(session))
         save_registry(registry)
 
 
 def enter_session(session: dict[str, Any], *, unbound_mode: str = "prompt") -> int:
     if tmux_exists(session["tmux_session"]):
-        touch_last_used(session["id"])
+        touch_last_used(session["id"], mark_viewed=True)
         return attach_tmux(session)
     if not session.get("codex_session_id"):
         if unbound_mode == "new":
@@ -1034,7 +1093,7 @@ def enter_session(session: dict[str, Any], *, unbound_mode: str = "prompt") -> i
                 return 1
     if not ensure_last_cwd(session):
         return 1
-    touch_last_used(session["id"])
+    touch_last_used(session["id"], mark_viewed=True)
     if not create_tmux_if_needed(session):
         return 1
     return attach_tmux(session)
@@ -1784,11 +1843,13 @@ def map_bind(target_session_id: str | None = None, *, force_transfer: bool = Fal
         if current.get("codex_session_id") and current.get("codex_session_id") != raw.id:
             if not ask_yes_no("目标会话已有绑定，是否替换？", default=False):
                 return 1
+        ts = now_utc()
         current["codex_session_id"] = raw.id
         if raw.cwd:
             current["last_cwd"] = raw.cwd
         current["transcript_path"] = raw.transcript_path
-        current["updated_at"] = now_utc()
+        current["last_viewed_at"] = later_time(ts, path_mtime_iso(raw.transcript_path))
+        current["updated_at"] = ts
         save_registry(registry, timestamped_backup=True)
     print(green("绑定完成。"))
     log_event(f"bound cdx id={target['id']} to codex id={raw.id}")
@@ -2043,6 +2104,7 @@ def cmd_hook_session_start(_: list[str]) -> int:
         if transcript_path:
             session["transcript_path"] = transcript_path
         session["last_used_at"] = ts
+        session["last_viewed_at"] = later_time(ts, session_conversation_updated_at(session))
         session["updated_at"] = ts
         save_registry(registry)
     log_event(f"hook mapped cdx_id={cdx_id} codex_id={codex_id} source={source}")

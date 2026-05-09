@@ -8,6 +8,9 @@ interface CdxSession {
   tmux_session: string
   codex_session_id?: string | null
   bound: boolean
+  unread?: boolean
+  last_viewed_at?: string | null
+  conversation_updated_at?: string | null
   last_cwd?: string | null
   created_at?: string | null
   updated_at?: string | null
@@ -102,9 +105,9 @@ class SessionItem extends vscode.TreeItem {
   constructor (readonly session: CdxSession) {
     super(session.name, vscode.TreeItemCollapsibleState.None)
     this.contextValue = 'cdxSession'
-    this.description = [session.tmux_status || 'unknown', session.bound ? 'bound' : 'unbound'].join(' ')
+    this.description = sessionDescription(session)
     this.tooltip = tooltipFor(session)
-    this.iconPath = new vscode.ThemeIcon(session.tmux_status === 'live' ? 'debug-console' : 'terminal')
+    this.iconPath = sessionIcon(session)
     this.command = {
       command: 'codexDeck.openSession',
       title: 'Open Session',
@@ -139,8 +142,8 @@ class SessionsProvider implements vscode.TreeDataProvider<SessionItem> {
     }
     const picked = await vscode.window.showQuickPick(
       this.sessions.map(session => ({
-        label: session.name,
-        description: [session.tmux_status || 'unknown', session.bound ? 'bound' : 'unbound'].join(' '),
+        label: session.unread ? `$(circle-filled) ${session.name}` : session.name,
+        description: sessionDescription(session),
         detail: session.last_cwd || undefined,
         session
       })),
@@ -332,7 +335,8 @@ function tooltipFor (session: CdxSession): string {
   const lines = [
     session.name,
     `tmux: ${session.tmux_status || 'unknown'}`,
-    `binding: ${session.bound ? 'bound' : 'unbound'}`
+    `binding: ${session.bound ? 'bound' : 'unbound'}`,
+    `result: ${viewState(session)}`
   ]
   if (session.last_cwd) {
     lines.push(`cwd: ${session.last_cwd}`)
@@ -340,7 +344,35 @@ function tooltipFor (session: CdxSession): string {
   if (session.codex_session_id) {
     lines.push(`uuid: ${session.codex_session_id}`)
   }
+  if (session.last_viewed_at) {
+    lines.push(`last viewed: ${session.last_viewed_at}`)
+  }
+  if (session.conversation_updated_at) {
+    lines.push(`conversation updated: ${session.conversation_updated_at}`)
+  }
   return lines.join('\n')
+}
+
+function sessionDescription (session: CdxSession): string {
+  return [
+    session.tmux_status || 'unknown',
+    session.bound ? 'bound' : 'unbound',
+    viewState(session)
+  ].join(' ')
+}
+
+function sessionIcon (session: CdxSession): vscode.ThemeIcon {
+  if (session.unread) {
+    return new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('testing.iconFailed'))
+  }
+  return new vscode.ThemeIcon(session.tmux_status === 'live' ? 'debug-console' : 'terminal')
+}
+
+function viewState (session: CdxSession): string {
+  if (!session.bound) {
+    return 'no-result'
+  }
+  return session.unread ? 'unread' : 'viewed'
 }
 
 function isSession (value: unknown): value is CdxSession {

@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.1 - Unread Reminder
+
+- Download: [codex-deck-vscode-0.1.1.vsix](releases/codex-deck-vscode-0.1.1.vsix)
+- Changes: cdx session lists and the VS Code / Remote SSH sidebar show unread Codex result reminders.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.1.vsix
+```
+
 ### v0.1.0 - VS Code Extension Preview
 
 - Download: [codex-deck-vscode-0.1.0.vsix](releases/codex-deck-vscode-0.1.0.vsix)
@@ -145,6 +155,7 @@ Codex hook writes back the real session id
 | Session list | Shows only cdx-managed sessions, sorted by recent use |
 | New session | Choose a root directory and optionally create a subdirectory |
 | Enter session | Attach to live tmux or resume Codex automatically |
+| Unread reminder | Shows unread results in the cdx list and VS Code extension when the transcript is newer than the last entered time |
 | Mouse scrolling | cdx refreshes tmux mouse mode and intercepts wheel events so Codex does not treat them as arrow keys |
 | UUID lookup | Show the Codex session id bound to a cdx workspace |
 | Delete session | Kill tmux and remove cdx mapping, preserving Codex history |
