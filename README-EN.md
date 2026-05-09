@@ -28,7 +28,7 @@ Use one `cdx` command to turn raw Codex conversations and tmux terminals into na
 |:---:|:---:|:---:|
 | [Quick Start](#quick-start) | [Advantages](#advantages) | [Workflow](#workflow) |
 | [Features](#features) | [Data and Safety](#data-and-safety) | [Install](#install) |
-| [Commands](#commands) | [Doctor](#doctor) | [Uninstall](#uninstall) |
+| [Releases](#releases) | [Commands](#commands) | [Uninstall](#uninstall) |
 
 <br>
 
@@ -56,6 +56,20 @@ Resume later:
 
 ```bash
 cdx enter paper-writing
+```
+
+<br>
+
+## Releases
+
+### v0.1.0 - VS Code Extension Preview
+
+- Download: [codex-deck-vscode-0.1.0.vsix](releases/codex-deck-vscode-0.1.0.vsix)
+- Purpose: manage Codex Deck sessions from the VS Code / Remote SSH sidebar.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.0.vsix
 ```
 
 <br>
