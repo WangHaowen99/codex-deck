@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.2 - Reuse VS Code Terminals
+
+- Download: [codex-deck-vscode-0.1.2.vsix](releases/codex-deck-vscode-0.1.2.vsix)
+- Changes: opening the same cdx session reuses the existing VS Code terminal instead of creating another terminal connection.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.2.vsix
+```
+
 ### v0.1.1 - Unread Reminder
 
 - Download: [codex-deck-vscode-0.1.1.vsix](releases/codex-deck-vscode-0.1.1.vsix)

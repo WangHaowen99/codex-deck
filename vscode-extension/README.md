@@ -14,6 +14,9 @@ It does not reimplement Codex Deck. It calls the remote/workspace `cdx` command:
 Unread Codex results are shown in the session description. When `cdx list --json`
 reports `unread: true`, the tree item uses a red dot icon.
 
+Opening the same cdx session again reuses the existing VS Code terminal. Closing
+that terminal clears the cache, so the next open creates a fresh terminal.
+
 ## Development
 
 ```bash

@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.2 - 复用 VS Code 终端
+
+- 下载：[codex-deck-vscode-0.1.2.vsix](releases/codex-deck-vscode-0.1.2.vsix)
+- 更新：点击同一个 cdx 会话时复用已有 VS Code 终端，不再重复新建终端连接。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.2.vsix
+```
+
 ### v0.1.1 - 未读提醒
 
 - 下载：[codex-deck-vscode-0.1.1.vsix](releases/codex-deck-vscode-0.1.1.vsix)

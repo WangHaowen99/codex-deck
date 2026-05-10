@@ -1,6 +1,7 @@
 import * as vscode from 'vscode'
 import { execFile } from 'child_process'
 import * as os from 'os'
+import { TerminalRegistry } from './terminalRegistry'
 
 interface CdxSession {
   id: string
@@ -157,13 +158,15 @@ export function activate (context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Codex Deck')
   const client = new CdxClient(output)
   const provider = new SessionsProvider(client)
+  const terminals = new TerminalRegistry<vscode.Terminal>()
 
   context.subscriptions.push(
     output,
     vscode.window.registerTreeDataProvider('codexDeck.sessions', provider),
     vscode.commands.registerCommand('codexDeck.refresh', async () => runAction('Refresh Codex Deck', () => provider.refresh())),
-    vscode.commands.registerCommand('codexDeck.newSession', async () => newSession(provider)),
-    vscode.commands.registerCommand('codexDeck.openSession', async item => openSession(provider, item)),
+    vscode.window.onDidCloseTerminal(terminal => terminals.deleteTerminal(terminal)),
+    vscode.commands.registerCommand('codexDeck.newSession', async () => newSession(provider, terminals)),
+    vscode.commands.registerCommand('codexDeck.openSession', async item => openSession(provider, terminals, item)),
     vscode.commands.registerCommand('codexDeck.renameSession', async item => renameSession(provider, item)),
     vscode.commands.registerCommand('codexDeck.deleteSession', async item => deleteSession(provider, item)),
     vscode.commands.registerCommand('codexDeck.copyUuid', async item => copyUuid(provider, item))
@@ -174,7 +177,7 @@ export function activate (context: vscode.ExtensionContext): void {
 
 export function deactivate (): void {}
 
-async function newSession (provider: SessionsProvider): Promise<void> {
+async function newSession (provider: SessionsProvider, terminals: TerminalRegistry<vscode.Terminal>): Promise<void> {
   const name = await vscode.window.showInputBox({
     prompt: 'cdx_name',
     ignoreFocusOut: true,
@@ -200,16 +203,16 @@ async function newSession (provider: SessionsProvider): Promise<void> {
     return created
   })
   if (session) {
-    openTerminalFor(session, provider.client.executable, { newIfUnbound: true })
+    openTerminalFor(session, provider.client.executable, terminals, { newIfUnbound: true })
   }
 }
 
-async function openSession (provider: SessionsProvider, item: unknown): Promise<void> {
+async function openSession (provider: SessionsProvider, terminals: TerminalRegistry<vscode.Terminal>, item: unknown): Promise<void> {
   const session = await sessionFrom(provider, item, 'Open which Codex Deck session?')
   if (!session) {
     return
   }
-  openTerminalFor(session, provider.client.executable)
+  openTerminalFor(session, provider.client.executable, terminals)
   void provider.refresh().catch(error => showError(error))
 }
 
@@ -275,11 +278,23 @@ async function sessionFrom (provider: SessionsProvider, item: unknown, placehold
   return provider.pickSession(placeholder)
 }
 
-function openTerminalFor (session: CdxSession, cdxPath: string, options: { newIfUnbound?: boolean } = {}): void {
+function openTerminalFor (
+  session: CdxSession,
+  cdxPath: string,
+  terminals: TerminalRegistry<vscode.Terminal>,
+  options: { newIfUnbound?: boolean } = {}
+): void {
+  const terminalKey = sessionTerminalKey(session)
+  const existing = terminals.get(terminalKey)
+  if (existing) {
+    existing.show()
+    return
+  }
   const terminal = vscode.window.createTerminal({
     name: session.name,
     cwd: session.last_cwd || undefined
   })
+  terminals.set(terminalKey, terminal)
   terminal.show()
   const args = ['enter']
   if (options.newIfUnbound) {
@@ -287,6 +302,10 @@ function openTerminalFor (session: CdxSession, cdxPath: string, options: { newIf
   }
   args.push(session.name)
   terminal.sendText([cdxPath, ...args].map(shellQuote).join(' '))
+}
+
+function sessionTerminalKey (session: CdxSession): string {
+  return session.id || session.tmux_session || session.name
 }
 
 async function runAction<T> (title: string, action: () => Promise<T>): Promise<T | undefined> {
