@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.5 - Codex hooks 配置兼容
+
+- 下载：[codex-deck-vscode-0.1.5.vsix](releases/codex-deck-vscode-0.1.5.vsix)
+- 更新：重新打包 VS Code 扩展版本；仓库同步 Codex 新版 `[features].hooks` 配置兼容修复。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.5.vsix
+```
+
 ### v0.1.4 - 运行状态与任务时长
 
 - 下载：[codex-deck-vscode-0.1.4.vsix](releases/codex-deck-vscode-0.1.4.vsix)

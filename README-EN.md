@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.5 - Codex Hooks Configuration Compatibility
+
+- Download: [codex-deck-vscode-0.1.5.vsix](releases/codex-deck-vscode-0.1.5.vsix)
+- Update: Rebuilt the VS Code extension package; the repository also includes the Codex `[features].hooks` compatibility fix.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.5.vsix
+```
+
 ### v0.1.4 - Running State and Elapsed Time
 
 - Download: [codex-deck-vscode-0.1.4.vsix](releases/codex-deck-vscode-0.1.4.vsix)
