@@ -234,7 +234,7 @@ Codex Deck 使用 XDG 风格路径：
 Codex 集成写入：
 
 ```text
-~/.codex/config.toml   # 启用 features.codex_hooks
+~/.codex/config.toml   # 启用 features.hooks
 ~/.codex/hooks.json    # 安装 SessionStart hook
 ```
 
@@ -338,7 +338,7 @@ cdx doctor
 
 - 配置文件是否存在、JSON 是否有效
 - 注册表是否存在、JSON 是否有效
-- `codex_hooks` 是否启用
+- `hooks` feature 是否启用
 - `SessionStart` hook 是否安装
 - root 名和路径是否重复
 - Codex session id 是否重复绑定

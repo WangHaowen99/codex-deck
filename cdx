@@ -910,7 +910,7 @@ def is_feature_enabled() -> bool:
         if re.match(r"^\[[^\]]+\]$", stripped):
             in_features = stripped == "[features]"
             continue
-        if in_features and re.match(r"^codex_hooks\s*=\s*true\s*(#.*)?$", stripped):
+        if in_features and re.match(r"^hooks\s*=\s*true\s*(#.*)?$", stripped):
             return True
     return False
 
@@ -930,7 +930,7 @@ def enable_codex_hooks_feature() -> None:
         is_table = bool(re.match(r"^\[[^\]]+\]$", stripped))
         if is_table:
             if in_features and not key_seen:
-                new_lines.append("codex_hooks = true")
+                new_lines.append("hooks = true")
                 inserted = True
             in_features = stripped == "[features]"
             features_seen = features_seen or in_features
@@ -938,29 +938,32 @@ def enable_codex_hooks_feature() -> None:
             new_lines.append(line)
             continue
         if in_features and re.match(r"^codex_hooks\s*=", stripped):
-            new_lines.append("codex_hooks = true")
+            inserted = True
+            continue
+        if in_features and re.match(r"^hooks\s*=", stripped):
+            new_lines.append("hooks = true")
             key_seen = True
             inserted = True
         else:
             new_lines.append(line)
 
     if in_features and not key_seen:
-        new_lines.append("codex_hooks = true")
+        new_lines.append("hooks = true")
         inserted = True
     if not features_seen:
         if new_lines and new_lines[-1].strip():
             new_lines.append("")
         new_lines.append("[features]")
-        new_lines.append("codex_hooks = true")
+        new_lines.append("hooks = true")
         inserted = True
     new_text = "\n".join(new_lines).rstrip() + "\n"
     if new_text != old_text:
         if CODEX_CONFIG_PATH.exists():
             shutil.copy2(CODEX_CONFIG_PATH, CODEX_CONFIG_PATH.with_suffix(f".toml.cdx.bak.{backup_suffix()}"))
         CODEX_CONFIG_PATH.write_text(new_text, encoding="utf-8")
-        log_event("enabled codex_hooks feature")
+        log_event("enabled hooks feature")
     elif inserted:
-        log_event("codex_hooks feature already enabled")
+        log_event("hooks feature already enabled")
 
 
 def install_hooks_json() -> None:
@@ -1002,7 +1005,7 @@ def install_hooks_json() -> None:
 
 def install_hook_interactive(auto: bool = False) -> bool:
     if auto:
-        print("cdx 需要安装 Codex SessionStart hook 到 ~/.codex/hooks.json，并启用 ~/.codex/config.toml 里的 codex_hooks。")
+        print("cdx 需要安装 Codex SessionStart hook 到 ~/.codex/hooks.json，并启用 ~/.codex/config.toml 里的 hooks。")
     if not ask_yes_no("继续安装/校验 hook？", default=True):
         print("已取消 hook 安装。")
         return False
@@ -2053,9 +2056,9 @@ def cmd_doctor(_: list[str]) -> int:
             problems += 1
 
     if is_feature_enabled():
-        print(f"{green('OK ')} codex_hooks feature 已启用")
+        print(f"{green('OK ')} hooks feature 已启用")
     else:
-        print(f"{red('ERR')} codex_hooks feature 未启用")
+        print(f"{red('ERR')} hooks feature 未启用")
         problems += 1
     if is_hook_installed():
         print(f"{green('OK ')} SessionStart hook 已安装")
