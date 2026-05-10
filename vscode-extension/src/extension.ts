@@ -10,6 +10,9 @@ interface CdxSession {
   codex_session_id?: string | null
   bound: boolean
   unread?: boolean
+  activity_state?: string | null
+  activity_started_at?: string | null
+  activity_elapsed_seconds?: number | null
   last_viewed_at?: string | null
   conversation_updated_at?: string | null
   last_cwd?: string | null
@@ -115,7 +118,7 @@ class SessionItem extends vscode.TreeItem {
   constructor (readonly session: CdxSession) {
     super(session.name, vscode.TreeItemCollapsibleState.None)
     this.contextValue = 'cdxSession'
-    this.description = sessionDescription(session)
+    this.description = sessionDescription(session) || undefined
     this.tooltip = tooltipFor(session)
     this.iconPath = sessionIcon(session)
     this.command = {
@@ -152,8 +155,8 @@ class SessionsProvider implements vscode.TreeDataProvider<SessionItem> {
     }
     const picked = await vscode.window.showQuickPick(
       this.sessions.map(session => ({
-        label: session.unread ? `$(circle-filled) ${session.name}` : session.name,
-        description: sessionDescription(session),
+        label: `${sessionIconLabel(session)} ${session.name}`.trim(),
+        description: sessionDescription(session) || undefined,
         detail: session.last_cwd || undefined,
         session
       })),
@@ -180,6 +183,11 @@ export function activate (context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codexDeck.deleteSession', async item => deleteSession(provider, item)),
     vscode.commands.registerCommand('codexDeck.copyUuid', async item => copyUuid(provider, item))
   )
+
+  const refreshTimer = setInterval(() => {
+    void provider.refresh().catch(error => output.appendLine(error instanceof Error ? error.message : String(error)))
+  }, 5000)
+  context.subscriptions.push({ dispose: () => clearInterval(refreshTimer) })
 
   void provider.refresh().catch(error => showError(error))
 }
@@ -367,10 +375,11 @@ function defaultCwd (): string {
 function tooltipFor (session: CdxSession): string {
   const lines = [
     session.name,
-    `tmux: ${session.tmux_status || 'unknown'}`,
-    `binding: ${session.bound ? 'bound' : 'unbound'}`,
-    `result: ${viewState(session)}`
+    `status: ${viewState(session)}`
   ]
+  if (session.activity_state === 'running' && session.activity_elapsed_seconds !== null && session.activity_elapsed_seconds !== undefined) {
+    lines.push(`elapsed: ${formatElapsed(session.activity_elapsed_seconds)}`)
+  }
   if (session.last_cwd) {
     lines.push(`cwd: ${session.last_cwd}`)
   }
@@ -387,25 +396,54 @@ function tooltipFor (session: CdxSession): string {
 }
 
 function sessionDescription (session: CdxSession): string {
-  return [
-    session.tmux_status || 'unknown',
-    session.bound ? 'bound' : 'unbound',
-    viewState(session)
-  ].join(' ')
+  if (session.activity_state === 'running') {
+    return formatElapsed(session.activity_elapsed_seconds || 0)
+  }
+  return ''
 }
 
 function sessionIcon (session: CdxSession): vscode.ThemeIcon {
-  if (session.unread) {
+  if (session.activity_state === 'running') {
+    return new vscode.ThemeIcon('loading~spin')
+  }
+  if (session.activity_state === 'unread' || session.unread) {
     return new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('testing.iconFailed'))
+  }
+  if (session.activity_state === 'read' || session.bound) {
+    return new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('testing.iconPassed'))
   }
   return new vscode.ThemeIcon(session.tmux_status === 'live' ? 'debug-console' : 'terminal')
 }
 
+function sessionIconLabel (session: CdxSession): string {
+  if (session.activity_state === 'running') {
+    return '$(loading~spin)'
+  }
+  if (session.activity_state === 'unread' || session.unread) {
+    return '$(circle-filled)'
+  }
+  if (session.activity_state === 'read' || session.bound) {
+    return '$(pass-filled)'
+  }
+  return ''
+}
+
 function viewState (session: CdxSession): string {
-  if (!session.bound) {
-    return 'no-result'
+  if (session.activity_state) {
+    return session.activity_state
   }
   return session.unread ? 'unread' : 'viewed'
+}
+
+function formatElapsed (seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const secs = total % 60
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+  }
+  return `${minutes}:${String(secs).padStart(2, '0')}`
 }
 
 function isSession (value: unknown): value is CdxSession {

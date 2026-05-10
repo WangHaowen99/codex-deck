@@ -25,6 +25,10 @@ def write_transcript(path: Path, mtime: datetime) -> None:
     os.utime(path, (timestamp, timestamp))
 
 
+def write_events(path: Path, events: list[dict]) -> None:
+    path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+
 class ViewStateTests(unittest.TestCase):
     def test_unbound_session_is_never_unread(self) -> None:
         session = {
@@ -120,6 +124,65 @@ class ViewStateTests(unittest.TestCase):
             finally:
                 cdx.REGISTRY_PATH = old_registry_path
                 cdx.LOCK_PATH = old_lock_path
+
+    def test_activity_state_reports_running_elapsed_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "session.jsonl"
+            write_events(
+                transcript,
+                [
+                    {"timestamp": "2026-05-09T08:00:00Z", "type": "event_msg", "payload": {"type": "task_started"}},
+                    {"timestamp": "2026-05-09T08:01:00Z", "type": "response_item", "payload": {"type": "reasoning"}},
+                ],
+            )
+            session = {
+                "id": "abc",
+                "name": "demo",
+                "tmux_session": "cdx_abc",
+                "codex_session_id": "codex-1",
+                "transcript_path": str(transcript),
+                "last_viewed_at": "2026-05-09T07:00:00Z",
+            }
+            old_tmux_exists = cdx.tmux_exists
+            cdx.tmux_exists = lambda _: True
+            try:
+                state = cdx.session_activity(session, now=cdx.parse_iso("2026-05-09T08:03:30Z"))
+            finally:
+                cdx.tmux_exists = old_tmux_exists
+
+            self.assertEqual(state["state"], "running")
+            self.assertEqual(state["started_at"], "2026-05-09T08:00:00Z")
+            self.assertEqual(state["elapsed_seconds"], 210)
+
+    def test_activity_state_falls_back_to_unread_after_task_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "session.jsonl"
+            write_events(
+                transcript,
+                [
+                    {"timestamp": "2026-05-09T08:00:00Z", "type": "event_msg", "payload": {"type": "task_started"}},
+                    {"timestamp": "2026-05-09T08:03:00Z", "type": "event_msg", "payload": {"type": "task_complete"}},
+                ],
+            )
+            timestamp = cdx.parse_iso("2026-05-09T08:03:00Z").timestamp()
+            os.utime(transcript, (timestamp, timestamp))
+            session = {
+                "id": "abc",
+                "name": "demo",
+                "tmux_session": "cdx_abc",
+                "codex_session_id": "codex-1",
+                "transcript_path": str(transcript),
+                "last_viewed_at": "2026-05-09T07:00:00Z",
+            }
+            old_tmux_exists = cdx.tmux_exists
+            cdx.tmux_exists = lambda _: True
+            try:
+                state = cdx.session_activity(session, now=cdx.parse_iso("2026-05-09T08:04:00Z"))
+            finally:
+                cdx.tmux_exists = old_tmux_exists
+
+            self.assertEqual(state["state"], "unread")
+            self.assertIsNone(state["elapsed_seconds"])
 
 
 if __name__ == "__main__":

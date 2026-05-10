@@ -20,6 +20,10 @@ that terminal clears the cache, so the next open creates a fresh terminal.
 Opening a session also calls `cdx mark-viewed --json <cdx_name>` so unread
 indicators clear even when an existing terminal is reused.
 
+While Codex is generating, the sidebar shows a spinning icon and elapsed time.
+Completed sessions use a red dot for unread results and a green dot for read
+results.
+
 ## Development
 
 ```bash

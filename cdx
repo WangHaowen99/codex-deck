@@ -541,6 +541,53 @@ def session_conversation_updated_at(session: dict[str, Any]) -> str | None:
     return path_mtime_iso(session.get("transcript_path"))
 
 
+def transcript_task_window(path: str | None, *, max_lines: int = 1200) -> tuple[str | None, str | None]:
+    if not path:
+        return None, None
+    transcript = Path(path)
+    if not transcript.exists():
+        return None, None
+    try:
+        lines = transcript.read_text(encoding="utf-8", errors="ignore").splitlines()[-max_lines:]
+    except OSError:
+        return None, None
+    latest_started: str | None = None
+    latest_complete: str | None = None
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        payload = item.get("payload", {})
+        if item.get("type") != "event_msg" or not isinstance(payload, dict):
+            continue
+        event_type = payload.get("type")
+        timestamp = item.get("timestamp") or payload.get("timestamp")
+        if not isinstance(timestamp, str) or not parse_iso(timestamp):
+            continue
+        if event_type == "task_started":
+            latest_started = timestamp
+        elif event_type == "task_complete":
+            latest_complete = timestamp
+    return latest_started, latest_complete
+
+
+def session_activity(session: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    if not session.get("codex_session_id"):
+        return {"state": "none", "started_at": None, "elapsed_seconds": None}
+    started_at, completed_at = transcript_task_window(session.get("transcript_path"))
+    started_dt = parse_iso(started_at)
+    completed_dt = parse_iso(completed_at)
+    live = tmux_exists(session["tmux_session"])
+    if live and started_dt and (not completed_dt or started_dt > completed_dt):
+        now_dt = now or datetime.now(timezone.utc)
+        elapsed = max(0, int((now_dt - started_dt).total_seconds()))
+        return {"state": "running", "started_at": started_at, "elapsed_seconds": elapsed}
+    if session_has_unread_result(session):
+        return {"state": "unread", "started_at": None, "elapsed_seconds": None}
+    return {"state": "read", "started_at": None, "elapsed_seconds": None}
+
+
 def session_viewed_at(session: dict[str, Any]) -> str | None:
     return session.get("last_viewed_at") or session.get("last_used_at") or session.get("created_at")
 
@@ -564,11 +611,16 @@ def session_has_unread_result(session: dict[str, Any]) -> bool:
 
 
 def view_state_text(session: dict[str, Any]) -> str:
+    activity = session_activity(session)
+    if activity["state"] == "running":
+        return cyan("running")
+    if activity["state"] == "unread":
+        return red("● unread")
+    if activity["state"] == "read":
+        return green("● read")
     if not session.get("codex_session_id"):
         return dim("no-result")
-    if session_has_unread_result(session):
-        return red("● unread")
-    return dim("viewed")
+    return dim("unknown")
 
 
 def normalize_preview_text(text: str | None) -> str:
@@ -629,6 +681,7 @@ def emit_json(data: dict[str, Any]) -> None:
 
 def session_json(session: dict[str, Any], *, include_status: bool = True) -> dict[str, Any]:
     conversation_updated_at = session_conversation_updated_at(session)
+    activity = session_activity(session)
     data = {
         "id": session.get("id"),
         "name": session.get("name"),
@@ -636,6 +689,9 @@ def session_json(session: dict[str, Any], *, include_status: bool = True) -> dic
         "codex_session_id": session.get("codex_session_id"),
         "bound": bool(session.get("codex_session_id")),
         "unread": session_has_unread_result(session),
+        "activity_state": activity["state"],
+        "activity_started_at": activity["started_at"],
+        "activity_elapsed_seconds": activity["elapsed_seconds"],
         "last_viewed_at": session.get("last_viewed_at"),
         "conversation_updated_at": conversation_updated_at,
         "last_cwd": session.get("last_cwd"),

@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.4 - Running State and Elapsed Time
+
+- Download: [codex-deck-vscode-0.1.4.vsix](releases/codex-deck-vscode-0.1.4.vsix)
+- Changes: the sidebar shows a loading animation and elapsed time while Codex is running; completed sessions show unread/read red or green dots without live, bound, or viewed text.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.4.vsix
+```
+
 ### v0.1.3 - Clear Unread On Open
 
 - Download: [codex-deck-vscode-0.1.3.vsix](releases/codex-deck-vscode-0.1.3.vsix)
@@ -176,6 +186,7 @@ Codex hook writes back the real session id
 | New session | Choose a root directory and optionally create a subdirectory |
 | Enter session | Attach to live tmux or resume Codex automatically |
 | Unread reminder | Shows unread results in the cdx list and VS Code extension when the transcript is newer than the last entered time |
+| Running state | Shows a running animation and elapsed time in the VS Code sidebar while Codex is generating |
 | Mouse scrolling | cdx refreshes tmux mouse mode and intercepts wheel events so Codex does not treat them as arrow keys |
 | UUID lookup | Show the Codex session id bound to a cdx workspace |
 | Delete session | Kill tmux and remove cdx mapping, preserving Codex history |
