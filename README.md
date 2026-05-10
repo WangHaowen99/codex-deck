@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.6 - 运行中动画修复
+
+- 下载：[codex-deck-vscode-0.1.6.vsix](releases/codex-deck-vscode-0.1.6.vsix)
+- 更新：修复运行中的 Codex 会话在 VS Code 侧边栏左侧没有动画的问题；运行时长改为在插件侧本地递增刷新。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.6.vsix
+```
+
 ### v0.1.5 - Codex hooks 配置兼容
 
 - 下载：[codex-deck-vscode-0.1.5.vsix](releases/codex-deck-vscode-0.1.5.vsix)

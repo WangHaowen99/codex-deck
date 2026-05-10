@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.6 - Running Animation Fix
+
+- Download: [codex-deck-vscode-0.1.6.vsix](releases/codex-deck-vscode-0.1.6.vsix)
+- Update: fixed the missing left-side animation for running Codex sessions in the VS Code sidebar; elapsed time now advances locally in the extension.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.6.vsix
+```
+
 ### v0.1.5 - Codex Hooks Configuration Compatibility
 
 - Download: [codex-deck-vscode-0.1.5.vsix](releases/codex-deck-vscode-0.1.5.vsix)
