@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.3 - Clear Unread On Open
+
+- Download: [codex-deck-vscode-0.1.3.vsix](releases/codex-deck-vscode-0.1.3.vsix)
+- Changes: opening or reusing a session terminal in VS Code calls `cdx mark-viewed`, so unread dots clear promptly.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.3.vsix
+```
+
 ### v0.1.2 - Reuse VS Code Terminals
 
 - Download: [codex-deck-vscode-0.1.2.vsix](releases/codex-deck-vscode-0.1.2.vsix)
@@ -265,6 +275,7 @@ cdx                       # open menu
 cdx list                  # list cdx sessions
 cdx new [cdx_name]        # create session; same name enters existing
 cdx enter [cdx_name]      # enter session
+cdx mark-viewed [cdx_name] # mark unread results as viewed
 cdx uuid [cdx_name]       # show the bound Codex session id
 cdx uuid --all            # list UUID mappings for all cdx sessions
 cdx delete [cdx_name]     # remove cdx mapping and kill tmux

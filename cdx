@@ -1059,6 +1059,20 @@ def touch_last_used(session_id: str, *, mark_viewed: bool = False) -> None:
         save_registry(registry)
 
 
+def mark_session_viewed(session_id: str) -> dict[str, Any] | None:
+    with registry_lock():
+        registry = load_registry()
+        session = find_session_by_id(registry, session_id)
+        if not session:
+            return None
+        ts = now_utc()
+        session["last_used_at"] = ts
+        session["last_viewed_at"] = later_time(ts, session_conversation_updated_at(session))
+        session["updated_at"] = ts
+        save_registry(registry)
+        return dict(session)
+
+
 def enter_session(session: dict[str, Any], *, unbound_mode: str = "prompt") -> int:
     if tmux_exists(session["tmux_session"]):
         touch_last_used(session["id"], mark_viewed=True)
@@ -1280,6 +1294,23 @@ def cmd_enter(args: list[str]) -> int:
         print(f"{shlex.quote(current_cdx_path())} enter{flags} {shlex.quote(session['name'])}")
         return 0
     return enter_session(session, unbound_mode="new" if new_if_unbound else "prompt")
+
+
+def cmd_mark_viewed(args: list[str]) -> int:
+    args = list(args)
+    json_mode = take_flag(args, "--json")
+    session = resolve_session_arg(args, "标记哪个会话为已查看", noninteractive=json_mode, json_mode=json_mode)
+    if not session:
+        return 1
+    updated = mark_session_viewed(session["id"])
+    if not updated:
+        print_error("注册表中找不到该会话。", json_mode=json_mode)
+        return 1
+    if json_mode:
+        emit_json({"ok": True, "session": session_json(updated)})
+        return 0
+    print(green(f"已标记为已查看: {updated.get('name', '')}"))
+    return 0
 
 
 def cmd_delete(args: list[str]) -> int:
@@ -2166,6 +2197,7 @@ def usage() -> str:
   cdx enter [cdx_name]      进入会话
   cdx enter --new-if-unbound [cdx_name]
   cdx enter --print-command [cdx_name]
+  cdx mark-viewed --json [cdx_name]
   cdx uuid [cdx_name]       查看绑定的 Codex session id
   cdx uuid --all            列出所有 cdx 会话的绑定 UUID
   cdx delete [--yes] [cdx_name]
@@ -2207,6 +2239,9 @@ def dispatch(argv: list[str]) -> int:
         "create": cmd_new,
         "enter": cmd_enter,
         "open": cmd_enter,
+        "mark-viewed": cmd_mark_viewed,
+        "viewed": cmd_mark_viewed,
+        "read": cmd_mark_viewed,
         "uuid": cmd_uuid,
         "id": cmd_uuid,
         "codex-id": cmd_uuid,

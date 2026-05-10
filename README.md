@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.3 - 点击即清除未读
+
+- 下载：[codex-deck-vscode-0.1.3.vsix](releases/codex-deck-vscode-0.1.3.vsix)
+- 更新：VS Code 打开或复用会话终端时会调用 `cdx mark-viewed`，确保未读红点及时清除。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.3.vsix
+```
+
 ### v0.1.2 - 复用 VS Code 终端
 
 - 下载：[codex-deck-vscode-0.1.2.vsix](releases/codex-deck-vscode-0.1.2.vsix)
@@ -293,6 +303,7 @@ cdx                       # 打开菜单
 cdx list                  # 列出 cdx 会话
 cdx new [cdx_name]        # 新建会话；同名则进入
 cdx enter [cdx_name]      # 进入会话
+cdx mark-viewed [cdx_name] # 标记未读结果为已查看
 cdx uuid [cdx_name]       # 查看绑定的 Codex session id
 cdx uuid --all            # 列出所有 cdx 会话的绑定 UUID
 cdx delete [cdx_name]     # 删除 cdx 映射并 kill tmux

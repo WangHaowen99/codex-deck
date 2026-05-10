@@ -74,6 +74,15 @@ class CdxClient {
     }
   }
 
+  async markViewed (name: string): Promise<CdxSession> {
+    const stdout = await this.run(['mark-viewed', '--json', name])
+    const data = parseJson<CdxSessionResult>(stdout)
+    if (!data.ok || !data.session) {
+      throw new Error(data.error || 'cdx mark-viewed failed')
+    }
+    return data.session
+  }
+
   private run (args: string[]): Promise<string> {
     this.output.appendLine(`$ ${this.executable} ${args.map(shellQuote).join(' ')}`)
     return new Promise((resolve, reject) => {
@@ -213,7 +222,7 @@ async function openSession (provider: SessionsProvider, terminals: TerminalRegis
     return
   }
   openTerminalFor(session, provider.client.executable, terminals)
-  void provider.refresh().catch(error => showError(error))
+  void markSessionViewed(provider, session).catch(error => showError(error))
 }
 
 async function renameSession (provider: SessionsProvider, item: unknown): Promise<void> {
@@ -266,6 +275,11 @@ async function copyUuid (provider: SessionsProvider, item: unknown): Promise<voi
   }
   await vscode.env.clipboard.writeText(session.codex_session_id)
   vscode.window.showInformationMessage(`Copied UUID for "${session.name}".`)
+}
+
+async function markSessionViewed (provider: SessionsProvider, session: CdxSession): Promise<void> {
+  await provider.client.markViewed(session.name)
+  await provider.refresh()
 }
 
 async function sessionFrom (provider: SessionsProvider, item: unknown, placeholder: string): Promise<CdxSession | undefined> {

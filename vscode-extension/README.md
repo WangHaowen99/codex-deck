@@ -17,6 +17,9 @@ reports `unread: true`, the tree item uses a red dot icon.
 Opening the same cdx session again reuses the existing VS Code terminal. Closing
 that terminal clears the cache, so the next open creates a fresh terminal.
 
+Opening a session also calls `cdx mark-viewed --json <cdx_name>` so unread
+indicators clear even when an existing terminal is reused.
+
 ## Development
 
 ```bash
