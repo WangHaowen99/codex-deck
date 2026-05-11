@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.7 - hooks 与运行状态同步发布
+
+- 下载：[codex-deck-vscode-0.1.7.vsix](releases/codex-deck-vscode-0.1.7.vsix)
+- 更新：重新打包最新 VS Code 扩展；配合当前 cdx 运行时的 `[features].hooks` 和 `activity_state` 输出，恢复新建会话绑定后的红点/绿点/运行动画显示。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.7.vsix
+```
+
 ### v0.1.6 - 运行中动画修复
 
 - 下载：[codex-deck-vscode-0.1.6.vsix](releases/codex-deck-vscode-0.1.6.vsix)

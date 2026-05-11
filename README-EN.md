@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.7 - Hooks and Activity State Sync
+
+- Download: [codex-deck-vscode-0.1.7.vsix](releases/codex-deck-vscode-0.1.7.vsix)
+- Update: rebuilt the latest VS Code extension package; with the current cdx runtime `[features].hooks` and `activity_state` output, newly bound sessions show red/green dots and running animation again.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.7.vsix
+```
+
 ### v0.1.6 - Running Animation Fix
 
 - Download: [codex-deck-vscode-0.1.6.vsix](releases/codex-deck-vscode-0.1.6.vsix)
