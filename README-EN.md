@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.8 - New Session Binding Fallback
+
+- Download: [codex-deck-vscode-0.1.8.vsix](releases/codex-deck-vscode-0.1.8.vsix)
+- Update: `cdx` now falls back to Codex shell snapshots for binding. If a newer Codex build skips the `SessionStart` hook, newly created sessions still get the real Codex session id, restoring red/green dots in the VS Code sidebar.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.8.vsix
+```
+
 ### v0.1.7 - Hooks and Activity State Sync
 
 - Download: [codex-deck-vscode-0.1.7.vsix](releases/codex-deck-vscode-0.1.7.vsix)

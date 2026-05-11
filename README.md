@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.8 - 新会话绑定兜底修复
+
+- 下载：[codex-deck-vscode-0.1.8.vsix](releases/codex-deck-vscode-0.1.8.vsix)
+- 更新：`cdx` 新增 shell snapshot 兜底绑定；Codex 新版本未执行 `SessionStart` hook 时，新建会话仍会自动拿到真实 Codex session id，从而恢复 VS Code 侧边栏红点/绿点显示。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.8.vsix
+```
+
 ### v0.1.7 - hooks 与运行状态同步发布
 
 - 下载：[codex-deck-vscode-0.1.7.vsix](releases/codex-deck-vscode-0.1.7.vsix)

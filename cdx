@@ -13,6 +13,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -66,6 +68,8 @@ CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
 CODEX_HOOKS_PATH = CODEX_HOME / "hooks.json"
 CODEX_SESSION_INDEX = CODEX_HOME / "session_index.jsonl"
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
+CODEX_SHELL_SNAPSHOTS_DIR = CODEX_HOME / "shell_snapshots"
+CODEX_ID_PATTERN = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
 
 
 class CdxError(Exception):
@@ -529,6 +533,72 @@ def path_mtime_iso(path: str | None) -> str | None:
     return datetime.fromtimestamp(mtime, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def codex_id_from_text(text: str | None) -> str | None:
+    if not text:
+        return None
+    match = CODEX_ID_PATTERN.search(text)
+    return match.group(1) if match else None
+
+
+def codex_id_from_shell_snapshot_path(path: Path) -> str | None:
+    return codex_id_from_text(path.name)
+
+
+def parse_shell_snapshot_env(path: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if not line.startswith("declare -x "):
+                    continue
+                try:
+                    parts = shlex.split(line, posix=True)
+                except ValueError:
+                    continue
+                for part in parts[2:]:
+                    if "=" not in part:
+                        continue
+                    key, value = part.split("=", 1)
+                    env[key] = value
+    except OSError:
+        return {}
+    return env
+
+
+def find_codex_transcript_path(codex_id: str | None) -> str | None:
+    if not codex_id:
+        return None
+    state_db = CODEX_HOME / "state_5.sqlite"
+    if state_db.exists():
+        try:
+            import sqlite3
+
+            with sqlite3.connect(str(state_db)) as conn:
+                row = conn.execute("select rollout_path from threads where id = ?", (codex_id,)).fetchone()
+            if row and row[0] and Path(row[0]).exists():
+                return str(row[0])
+        except Exception:
+            pass
+    if not CODEX_SESSIONS_DIR.exists():
+        return None
+    try:
+        matches = [path for path in CODEX_SESSIONS_DIR.glob(f"**/*{codex_id}*.jsonl") if path.is_file()]
+    except OSError:
+        return None
+    if not matches:
+        return None
+    matches.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)
+    return str(matches[0])
+
+
+def resolve_session_transcript_path(session: dict[str, Any]) -> str | None:
+    transcript_path = session.get("transcript_path")
+    if transcript_path and Path(transcript_path).exists():
+        return transcript_path
+    resolved = find_codex_transcript_path(session.get("codex_session_id"))
+    return resolved or transcript_path
+
+
 def later_time(left: str | None, right: str | None) -> str | None:
     left_dt = parse_iso(left)
     right_dt = parse_iso(right)
@@ -538,7 +608,7 @@ def later_time(left: str | None, right: str | None) -> str | None:
 
 
 def session_conversation_updated_at(session: dict[str, Any]) -> str | None:
-    return path_mtime_iso(session.get("transcript_path"))
+    return path_mtime_iso(resolve_session_transcript_path(session))
 
 
 def transcript_task_window(path: str | None, *, max_lines: int = 1200) -> tuple[str | None, str | None]:
@@ -575,7 +645,7 @@ def transcript_task_window(path: str | None, *, max_lines: int = 1200) -> tuple[
 def session_activity(session: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     if not session.get("codex_session_id"):
         return {"state": "none", "started_at": None, "elapsed_seconds": None}
-    started_at, completed_at = transcript_task_window(session.get("transcript_path"))
+    started_at, completed_at = transcript_task_window(resolve_session_transcript_path(session))
     started_dt = parse_iso(started_at)
     completed_dt = parse_iso(completed_at)
     live = tmux_exists(session["tmux_session"])
@@ -680,6 +750,7 @@ def emit_json(data: dict[str, Any]) -> None:
 
 
 def session_json(session: dict[str, Any], *, include_status: bool = True) -> dict[str, Any]:
+    transcript_path = resolve_session_transcript_path(session)
     conversation_updated_at = session_conversation_updated_at(session)
     activity = session_activity(session)
     data = {
@@ -698,7 +769,7 @@ def session_json(session: dict[str, Any], *, include_status: bool = True) -> dic
         "created_at": session.get("created_at"),
         "updated_at": session.get("updated_at"),
         "last_used_at": session.get("last_used_at"),
-        "transcript_path": session.get("transcript_path"),
+        "transcript_path": transcript_path,
     }
     if include_status:
         data["tmux_status"] = tmux_status(session)
@@ -1116,6 +1187,86 @@ def touch_last_used(session_id: str, *, mark_viewed: bool = False) -> None:
         if mark_viewed:
             session["last_viewed_at"] = later_time(ts, session_conversation_updated_at(session))
         save_registry(registry)
+
+
+def bind_cdx_session_to_codex_id(session_id: str, codex_id: str, *, source: str) -> bool:
+    transcript_path = find_codex_transcript_path(codex_id)
+    with registry_lock():
+        registry = load_registry()
+        session = find_session_by_id(registry, session_id)
+        if not session:
+            log_event(f"{source} cdx session not found cdx_id={session_id} codex_id={codex_id}")
+            return False
+        existing = session.get("codex_session_id")
+        if existing and existing != codex_id:
+            log_event(f"{source} conflict cdx_id={session_id} existing={existing} incoming={codex_id}")
+            return False
+        changed = existing != codex_id
+        if transcript_path and session.get("transcript_path") != transcript_path:
+            session["transcript_path"] = transcript_path
+            changed = True
+        if not changed:
+            return True
+        ts = now_utc()
+        session["codex_session_id"] = codex_id
+        session["last_used_at"] = ts
+        session["last_viewed_at"] = later_time(ts, session_conversation_updated_at(session))
+        session["updated_at"] = ts
+        save_registry(registry)
+    log_event(f"{source} mapped cdx_id={session_id} codex_id={codex_id}")
+    return True
+
+
+def find_recent_shell_snapshot_binding(session_id: str, *, started_at: float) -> tuple[str, Path] | None:
+    if not CODEX_SHELL_SNAPSHOTS_DIR.exists():
+        return None
+    candidates: list[tuple[float, str, Path]] = []
+    try:
+        paths = list(CODEX_SHELL_SNAPSHOTS_DIR.glob("*.sh"))
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime + 2 < started_at:
+            continue
+        codex_id = codex_id_from_shell_snapshot_path(path)
+        if not codex_id:
+            continue
+        env = parse_shell_snapshot_env(path)
+        if env.get("CDX_SESSION_ID") != session_id:
+            continue
+        candidates.append((stat.st_mtime, codex_id, path))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    _, codex_id, path = candidates[0]
+    return codex_id, path
+
+
+def bind_from_recent_shell_snapshots(session_id: str, *, started_at: float, timeout_seconds: float = 0) -> bool:
+    deadline = time.time() + max(0, timeout_seconds)
+    while True:
+        found = find_recent_shell_snapshot_binding(session_id, started_at=started_at)
+        if found:
+            codex_id, path = found
+            return bind_cdx_session_to_codex_id(session_id, codex_id, source=f"shell snapshot {path.name}")
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.5)
+
+
+def start_shell_snapshot_binding_watcher(session_id: str, *, started_at: float) -> threading.Thread:
+    watcher = threading.Thread(
+        target=bind_from_recent_shell_snapshots,
+        kwargs={"session_id": session_id, "started_at": started_at, "timeout_seconds": 60},
+        name=f"cdx-bind-{session_id}",
+        daemon=True,
+    )
+    watcher.start()
+    return watcher
 
 
 def mark_session_viewed(session_id: str) -> dict[str, Any] | None:
@@ -2147,7 +2298,12 @@ def cmd_runner(args: list[str]) -> int:
         if session.get("codex_session_id"):
             args = ["codex", "resume", session["codex_session_id"]]
         log_event(f"runner starting {' '.join(args)} for cdx id={session['id']}")
+        started_at = time.time()
+        if not session.get("codex_session_id"):
+            start_shell_snapshot_binding_watcher(session["id"], started_at=started_at)
         result = subprocess.run(args, env=env)
+        if not session.get("codex_session_id"):
+            bind_from_recent_shell_snapshots(session["id"], started_at=started_at)
         if result.returncode != 0:
             log_event(f"runner codex exited rc={result.returncode} cdx id={session['id']}")
             print(f"\nCodex 退出码：{result.returncode}")
@@ -2191,8 +2347,7 @@ def cmd_hook_session_start(_: list[str]) -> int:
         session["codex_session_id"] = codex_id
         if cwd:
             session["last_cwd"] = cwd
-        if transcript_path:
-            session["transcript_path"] = transcript_path
+        session["transcript_path"] = transcript_path or find_codex_transcript_path(codex_id) or session.get("transcript_path")
         session["last_used_at"] = ts
         session["last_viewed_at"] = later_time(ts, session_conversation_updated_at(session))
         session["updated_at"] = ts

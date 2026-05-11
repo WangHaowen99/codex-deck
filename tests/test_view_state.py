@@ -184,6 +184,96 @@ class ViewStateTests(unittest.TestCase):
             self.assertEqual(state["state"], "unread")
             self.assertIsNone(state["elapsed_seconds"])
 
+    def test_shell_snapshot_binds_unbound_session_without_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            registry_path = tmp_path / "sessions.json"
+            lock_path = tmp_path / "lock"
+            codex_home = tmp_path / "codex"
+            snapshots = codex_home / "shell_snapshots"
+            snapshots.mkdir(parents=True)
+            codex_id = "019e14d9-b98b-73a0-868c-2d2421a505f8"
+            snapshot = snapshots / f"{codex_id}.1778466273676638499.sh"
+            snapshot.write_text(
+                "\n".join(
+                    [
+                        "# Snapshot file",
+                        'declare -x CDX_NAME="demo"',
+                        'declare -x CDX_REGISTRY="/tmp/other.json"',
+                        'declare -x CDX_SESSION_ID="abc123"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "version": cdx.VERSION,
+                        "sessions": [
+                            {
+                                "id": "abc123",
+                                "name": "demo",
+                                "tmux_session": "cdx_abc123",
+                                "codex_session_id": None,
+                                "created_at": "2026-05-11T02:24:30Z",
+                                "updated_at": "2026-05-11T02:24:30Z",
+                                "last_used_at": "2026-05-11T02:24:30Z",
+                                "last_viewed_at": "2026-05-11T02:24:30Z",
+                                "transcript_path": None,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            old_registry_path = cdx.REGISTRY_PATH
+            old_lock_path = cdx.LOCK_PATH
+            old_snapshots_dir = cdx.CODEX_SHELL_SNAPSHOTS_DIR
+            cdx.REGISTRY_PATH = registry_path
+            cdx.LOCK_PATH = lock_path
+            cdx.CODEX_SHELL_SNAPSHOTS_DIR = snapshots
+            try:
+                self.assertTrue(cdx.bind_from_recent_shell_snapshots("abc123", started_at=0))
+                refreshed = cdx.load_registry()["sessions"][0]
+                self.assertEqual(refreshed["codex_session_id"], codex_id)
+                self.assertIsNone(refreshed["transcript_path"])
+            finally:
+                cdx.REGISTRY_PATH = old_registry_path
+                cdx.LOCK_PATH = old_lock_path
+                cdx.CODEX_SHELL_SNAPSHOTS_DIR = old_snapshots_dir
+
+    def test_session_json_resolves_missing_transcript_path_from_rollout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            sessions_dir = tmp_path / "sessions"
+            rollout_dir = sessions_dir / "2026" / "05" / "11"
+            rollout_dir.mkdir(parents=True)
+            codex_id = "019e14d9-b98b-73a0-868c-2d2421a505f8"
+            transcript = rollout_dir / f"rollout-2026-05-11T10-24-33-{codex_id}.jsonl"
+            write_transcript(transcript, datetime(2026, 5, 11, 2, 30, tzinfo=timezone.utc))
+            session = {
+                "id": "abc123",
+                "name": "demo",
+                "tmux_session": "cdx_abc123",
+                "codex_session_id": codex_id,
+                "transcript_path": None,
+                "last_viewed_at": "2026-05-11T02:24:30Z",
+            }
+            old_sessions_dir = cdx.CODEX_SESSIONS_DIR
+            old_tmux_exists = cdx.tmux_exists
+            cdx.CODEX_SESSIONS_DIR = sessions_dir
+            cdx.tmux_exists = lambda _: False
+            try:
+                data = cdx.session_json(session, include_status=False)
+            finally:
+                cdx.CODEX_SESSIONS_DIR = old_sessions_dir
+                cdx.tmux_exists = old_tmux_exists
+
+            self.assertEqual(data["transcript_path"], str(transcript))
+            self.assertEqual(data["conversation_updated_at"], "2026-05-11T02:30:00Z")
+            self.assertTrue(data["unread"])
+
 
 if __name__ == "__main__":
     unittest.main()
