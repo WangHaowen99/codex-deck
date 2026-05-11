@@ -23,6 +23,11 @@ interface CdxSession {
   activity_elapsed_seconds?: number | null
   last_viewed_at?: string | null
   conversation_updated_at?: string | null
+  total_tokens?: number | null
+  turn_count?: number | null
+  context_tokens?: number | null
+  context_window?: number | null
+  context_percent?: number | null
   last_cwd?: string | null
   created_at?: string | null
   updated_at?: string | null
@@ -390,6 +395,7 @@ function tooltipFor (session: CdxSession): string {
   if (isRunning(session)) {
     lines.push(`elapsed: ${formatElapsed(runningElapsedSeconds(session))}`)
   }
+  addMetricTooltipLines(lines, session)
   if (session.last_cwd) {
     lines.push(`cwd: ${session.last_cwd}`)
   }
@@ -403,6 +409,34 @@ function tooltipFor (session: CdxSession): string {
     lines.push(`conversation updated: ${session.conversation_updated_at}`)
   }
   return lines.join('\n')
+}
+
+function addMetricTooltipLines (lines: string[], session: CdxSession): void {
+  const turns = finiteNumber(session.turn_count)
+  if (turns !== undefined) {
+    lines.push(`turns: ${Math.max(0, Math.floor(turns)).toLocaleString('en-US')}`)
+  }
+  const totalTokens = finiteNumber(session.total_tokens)
+  if (totalTokens !== undefined) {
+    lines.push(`total tokens: ${Math.max(0, Math.floor(totalTokens)).toLocaleString('en-US')}`)
+  }
+  const contextPercent = finiteNumber(session.context_percent)
+  if (contextPercent !== undefined) {
+    const percent = `${Math.max(0, Math.round(contextPercent))}%`
+    const contextTokens = finiteNumber(session.context_tokens)
+    const contextWindow = finiteNumber(session.context_window)
+    if (contextTokens !== undefined && contextWindow !== undefined) {
+      const used = Math.max(0, Math.floor(contextTokens)).toLocaleString('en-US')
+      const window = Math.max(0, Math.floor(contextWindow)).toLocaleString('en-US')
+      lines.push(`context: ${percent} (${used} / ${window})`)
+    } else {
+      lines.push(`context: ${percent}`)
+    }
+  }
+}
+
+function finiteNumber (value: number | null | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function sessionIcon (session: CdxSession): vscode.ThemeIcon {

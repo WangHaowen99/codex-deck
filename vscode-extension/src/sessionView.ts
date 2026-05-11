@@ -4,6 +4,9 @@ export interface SessionViewState {
   activity_elapsed_seconds?: number | null
   unread?: boolean
   bound?: boolean
+  total_tokens?: number | null
+  turn_count?: number | null
+  context_percent?: number | null
 }
 
 export interface SessionSortState {
@@ -62,10 +65,30 @@ export function sortSessionsForSidebar<T extends SessionSortState> (sessions: T[
 }
 
 export function sessionDescription (session: SessionViewState, nowMs = Date.now()): string {
+  const parts: string[] = []
   if (isRunning(session)) {
-    return formatElapsed(runningElapsedSeconds(session, nowMs))
+    parts.push(formatElapsed(runningElapsedSeconds(session, nowMs)))
   }
-  return ''
+  parts.push(...sessionMetricParts(session))
+  return parts.join(' · ')
+}
+
+export function sessionMetricParts (session: SessionViewState): string[] {
+  const parts: string[] = []
+  const turns = finiteMetric(session.turn_count)
+  if (turns !== undefined) {
+    const count = Math.max(0, Math.floor(turns))
+    parts.push(`${count} ${count === 1 ? 'turn' : 'turns'}`)
+  }
+  const totalTokens = finiteMetric(session.total_tokens)
+  if (totalTokens !== undefined) {
+    parts.push(`${formatTokenCount(totalTokens)} tok`)
+  }
+  const contextPercent = finiteMetric(session.context_percent)
+  if (contextPercent !== undefined) {
+    parts.push(`ctx ${Math.max(0, Math.round(contextPercent))}%`)
+  }
+  return parts
 }
 
 export function runningElapsedSeconds (session: SessionViewState, nowMs = Date.now()): number {
@@ -91,6 +114,30 @@ export function formatElapsed (seconds: number): string {
     return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
   }
   return `${minutes}:${String(secs).padStart(2, '0')}`
+}
+
+export function formatTokenCount (tokens: number): string {
+  const value = Math.max(0, Math.floor(tokens))
+  if (value >= 1_000_000_000) {
+    return formatScaledNumber(value, 1_000_000_000, 'B')
+  }
+  if (value >= 1_000_000) {
+    return formatScaledNumber(value, 1_000_000, 'M')
+  }
+  if (value >= 1_000) {
+    return formatScaledNumber(value, 1_000, 'K')
+  }
+  return String(value)
+}
+
+function formatScaledNumber (value: number, unit: number, suffix: string): string {
+  const scaled = value / unit
+  const precision = scaled < 10 ? 1 : 0
+  return `${scaled.toFixed(precision).replace(/\.0$/, '')}${suffix}`
+}
+
+function finiteMetric (value: number | null | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function timestamp (value: string | null | undefined): number {

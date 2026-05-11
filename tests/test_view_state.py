@@ -74,6 +74,165 @@ class ViewStateTests(unittest.TestCase):
             self.assertEqual(data["last_viewed_at"], "2026-05-09T08:00:00Z")
             self.assertIsNotNone(data["conversation_updated_at"])
 
+    def test_transcript_metrics_count_visible_turns_and_latest_token_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "session.jsonl"
+            write_events(
+                transcript,
+                [
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>internal</INSTRUCTIONS>"}],
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>"}],
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "帮我实现侧边栏指标"}],
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "user_message",
+                            "message": "帮我实现侧边栏指标",
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "user_message",
+                            "message": "再加一个 tooltip",
+                        },
+                    },
+                    {
+                        "timestamp": "2026-05-11T08:00:00.000Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "继续"}],
+                        },
+                    },
+                    {
+                        "timestamp": "2026-05-11T08:00:00.001Z",
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "user_message",
+                            "message": "继续",
+                        },
+                    },
+                    {
+                        "timestamp": "2026-05-11T08:05:00.000Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "继续"}],
+                        },
+                    },
+                    {
+                        "timestamp": "2026-05-11T08:05:00.001Z",
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "user_message",
+                            "message": "继续",
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {"total_tokens": 1000},
+                                "last_token_usage": {"total_tokens": 100},
+                                "model_context_window": 1000,
+                            },
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {"total_tokens": 1234567},
+                                "last_token_usage": {"total_tokens": 129200},
+                                "model_context_window": 258400,
+                            },
+                        },
+                    },
+                ],
+            )
+
+            metrics = cdx.transcript_metrics(str(transcript))
+
+            self.assertEqual(metrics["turn_count"], 4)
+            self.assertEqual(metrics["total_tokens"], 1234567)
+            self.assertEqual(metrics["context_tokens"], 129200)
+            self.assertEqual(metrics["context_window"], 258400)
+            self.assertEqual(metrics["context_percent"], 50)
+
+    def test_session_json_includes_transcript_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "session.jsonl"
+            write_events(
+                transcript,
+                [
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "第一轮"}],
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {"total_tokens": 4096},
+                                "last_token_usage": {"input_tokens": 1024, "output_tokens": 256},
+                                "model_context_window": 4096,
+                            },
+                        },
+                    },
+                ],
+            )
+            session = {
+                "id": "abc",
+                "name": "demo",
+                "tmux_session": "cdx_abc",
+                "codex_session_id": "codex-1",
+                "transcript_path": str(transcript),
+                "last_viewed_at": "2026-05-09T08:00:00Z",
+            }
+            old_tmux_exists = cdx.tmux_exists
+            cdx.tmux_exists = lambda _: False
+            try:
+                data = cdx.session_json(session, include_status=False)
+            finally:
+                cdx.tmux_exists = old_tmux_exists
+
+            self.assertEqual(data["turn_count"], 1)
+            self.assertEqual(data["total_tokens"], 4096)
+            self.assertEqual(data["context_tokens"], 1280)
+            self.assertEqual(data["context_window"], 4096)
+            self.assertEqual(data["context_percent"], 31)
+
     def test_mark_viewed_command_clears_unread_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

@@ -704,10 +704,13 @@ def user_visible_conversation_text(text: str | None) -> str:
     if not cleaned:
         return ""
     internal_prefixes = (
+        "# AGENTS.md instructions",
+        "Another language model started to solve this problem",
         "<environment_context>",
         "<permissions instructions>",
         "<collaboration_mode>",
         "<skills_instructions>",
+        "<INSTRUCTIONS>",
     )
     return "" if cleaned.startswith(internal_prefixes) else cleaned
 
@@ -726,6 +729,112 @@ def extract_message_content_text(content: Any) -> str:
             if isinstance(text, str):
                 pieces.append(text)
     return " ".join(pieces)
+
+
+def empty_transcript_metrics() -> dict[str, int | None]:
+    return {
+        "total_tokens": None,
+        "turn_count": None,
+        "context_tokens": None,
+        "context_window": None,
+        "context_percent": None,
+    }
+
+
+def int_token_value(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float) and value >= 0 and value.is_integer():
+        return int(value)
+    return None
+
+
+def usage_total_tokens(usage: Any) -> int | None:
+    if not isinstance(usage, dict):
+        return None
+    total = int_token_value(usage.get("total_tokens"))
+    if total is not None:
+        return total
+    parts = [
+        int_token_value(usage.get("input_tokens")),
+        int_token_value(usage.get("output_tokens")),
+    ]
+    if all(part is None for part in parts):
+        return None
+    return sum(part or 0 for part in parts)
+
+
+def transcript_metrics(path: str | None) -> dict[str, int | None]:
+    metrics = empty_transcript_metrics()
+    if not path:
+        return metrics
+    transcript = Path(path)
+    if not transcript.exists():
+        return metrics
+    turn_count = 0
+    last_turn_text: str | None = None
+    last_turn_time: datetime | None = None
+
+    def add_user_turn(text: str | None, timestamp: str | None) -> None:
+        nonlocal last_turn_text, last_turn_time, turn_count
+        visible = user_visible_conversation_text(text)
+        if not visible:
+            return
+        turn_time = parse_iso(timestamp) if isinstance(timestamp, str) else None
+        if visible == last_turn_text:
+            if turn_time is None or last_turn_time is None:
+                return
+            if abs((turn_time - last_turn_time).total_seconds()) <= 2:
+                return
+        turn_count += 1
+        last_turn_text = visible
+        last_turn_time = turn_time
+
+    try:
+        with transcript.open("r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                payload = item.get("payload", {})
+                if item.get("type") == "response_item" and isinstance(payload, dict):
+                    if payload.get("type") == "message" and payload.get("role") == "user":
+                        timestamp = item.get("timestamp") or payload.get("timestamp")
+                        add_user_turn(
+                            extract_message_content_text(payload.get("content")),
+                            timestamp if isinstance(timestamp, str) else None,
+                        )
+                if item.get("type") != "event_msg" or not isinstance(payload, dict):
+                    continue
+                event_type = payload.get("type")
+                if event_type == "user_message":
+                    message = payload.get("message")
+                    timestamp = item.get("timestamp") or payload.get("timestamp")
+                    add_user_turn(
+                        message if isinstance(message, str) else None,
+                        timestamp if isinstance(timestamp, str) else None,
+                    )
+                elif event_type == "token_count":
+                    info = payload.get("info")
+                    if not isinstance(info, dict):
+                        continue
+                    total_tokens = usage_total_tokens(info.get("total_token_usage"))
+                    context_tokens = usage_total_tokens(info.get("last_token_usage"))
+                    context_window = int_token_value(info.get("model_context_window"))
+                    metrics["total_tokens"] = total_tokens
+                    metrics["context_tokens"] = context_tokens
+                    metrics["context_window"] = context_window
+                    if context_tokens is not None and context_window and context_window > 0:
+                        metrics["context_percent"] = round(context_tokens / context_window * 100)
+                    else:
+                        metrics["context_percent"] = None
+    except OSError:
+        return metrics
+    metrics["turn_count"] = turn_count
+    return metrics
 
 
 def print_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -753,6 +862,7 @@ def session_json(session: dict[str, Any], *, include_status: bool = True) -> dic
     transcript_path = resolve_session_transcript_path(session)
     conversation_updated_at = session_conversation_updated_at(session)
     activity = session_activity(session)
+    metrics = transcript_metrics(transcript_path)
     data = {
         "id": session.get("id"),
         "name": session.get("name"),
@@ -770,6 +880,11 @@ def session_json(session: dict[str, Any], *, include_status: bool = True) -> dic
         "updated_at": session.get("updated_at"),
         "last_used_at": session.get("last_used_at"),
         "transcript_path": transcript_path,
+        "total_tokens": metrics["total_tokens"],
+        "turn_count": metrics["turn_count"],
+        "context_tokens": metrics["context_tokens"],
+        "context_window": metrics["context_window"],
+        "context_percent": metrics["context_percent"],
     }
     if include_status:
         data["tmux_status"] = tmux_status(session)

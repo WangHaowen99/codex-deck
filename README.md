@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.10 - 会话指标显示
+
+- 下载：[codex-deck-vscode-0.1.10.vsix](releases/codex-deck-vscode-0.1.10.vsix)
+- 更新：`cdx list --json` 新增总 token 数、对话轮数和当前上下文占比；VS Code 侧边栏和 tooltip 同步显示这些会话指标。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.10.vsix
+```
+
 ### v0.1.9 - 运行中橙点与稳定排序
 
 - 下载：[codex-deck-vscode-0.1.9.vsix](releases/codex-deck-vscode-0.1.9.vsix)

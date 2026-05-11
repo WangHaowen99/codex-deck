@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.10 - Session Metrics Display
+
+- Download: [codex-deck-vscode-0.1.10.vsix](releases/codex-deck-vscode-0.1.10.vsix)
+- Update: `cdx list --json` now reports total tokens, turn count, and current context usage; the VS Code sidebar and tooltip display those session metrics.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.10.vsix
+```
+
 ### v0.1.9 - Running Orange Dot and Stable Ordering
 
 - Download: [codex-deck-vscode-0.1.9.vsix](releases/codex-deck-vscode-0.1.9.vsix)

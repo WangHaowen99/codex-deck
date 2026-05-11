@@ -24,6 +24,9 @@ While Codex is generating, the sidebar shows an orange dot and elapsed time.
 Completed sessions use a red dot for unread results and a green dot for read
 results.
 
+The sidebar also displays per-session metrics from `cdx list --json`: total
+tokens, user turn count, and current context usage percentage.
+
 ## Development
 
 ```bash
