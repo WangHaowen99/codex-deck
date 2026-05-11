@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.9 - 运行中橙点与稳定排序
+
+- 下载：[codex-deck-vscode-0.1.9.vsix](releases/codex-deck-vscode-0.1.9.vsix)
+- 更新：VS Code 侧边栏中，Codex 运行中的会话改为橙色圆点，不再使用加载动画；会话列表按创建时间稳定排序，不再因为最近访问而跳到最上方。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.9.vsix
+```
+
 ### v0.1.8 - 新会话绑定兜底修复
 
 - 下载：[codex-deck-vscode-0.1.8.vsix](releases/codex-deck-vscode-0.1.8.vsix)

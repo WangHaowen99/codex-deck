@@ -3,12 +3,12 @@ import { execFile } from 'child_process'
 import * as os from 'os'
 import { TerminalRegistry } from './terminalRegistry'
 import {
-  RUNNING_ICON_FRAME_COUNT,
   formatElapsed,
   isRunning,
   runningElapsedSeconds,
-  runningIconFrameFile,
-  sessionDescription
+  sessionDescription,
+  sessionStatusIcon,
+  sortSessionsForSidebar
 } from './sessionView'
 
 interface CdxSession {
@@ -124,15 +124,13 @@ class CdxClient {
 
 class SessionItem extends vscode.TreeItem {
   constructor (
-    readonly session: CdxSession,
-    extensionUri: vscode.Uri,
-    animationFrame: number
+    readonly session: CdxSession
   ) {
     super(session.name, vscode.TreeItemCollapsibleState.None)
     this.contextValue = 'cdxSession'
     this.description = sessionDescription(session) || undefined
     this.tooltip = tooltipFor(session)
-    this.iconPath = sessionIcon(session, extensionUri, animationFrame)
+    this.iconPath = sessionIcon(session)
     this.command = {
       command: 'codexDeck.openSession',
       title: 'Open Session',
@@ -145,31 +143,19 @@ class SessionsProvider implements vscode.TreeDataProvider<SessionItem> {
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<SessionItem | undefined | null | void>()
   readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event
   private sessions: CdxSession[] = []
-  private animationFrame = 0
 
-  constructor (
-    readonly client: CdxClient,
-    private readonly extensionUri: vscode.Uri
-  ) {}
+  constructor (readonly client: CdxClient) {}
 
   getTreeItem (element: SessionItem): vscode.TreeItem {
     return element
   }
 
   getChildren (): SessionItem[] {
-    return this.sessions.map(session => new SessionItem(session, this.extensionUri, this.animationFrame))
+    return this.sessions.map(session => new SessionItem(session))
   }
 
   async refresh (): Promise<void> {
-    this.sessions = await this.client.list()
-    this.onDidChangeTreeDataEmitter.fire()
-  }
-
-  tickAnimation (): void {
-    if (!this.sessions.some(isRunning)) {
-      return
-    }
-    this.animationFrame = (this.animationFrame + 1) % RUNNING_ICON_FRAME_COUNT
+    this.sessions = sortSessionsForSidebar(await this.client.list())
     this.onDidChangeTreeDataEmitter.fire()
   }
 
@@ -193,7 +179,7 @@ class SessionsProvider implements vscode.TreeDataProvider<SessionItem> {
 export function activate (context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Codex Deck')
   const client = new CdxClient(output)
-  const provider = new SessionsProvider(client, context.extensionUri)
+  const provider = new SessionsProvider(client)
   const terminals = new TerminalRegistry<vscode.Terminal>()
 
   context.subscriptions.push(
@@ -212,11 +198,6 @@ export function activate (context: vscode.ExtensionContext): void {
     void provider.refresh().catch(error => output.appendLine(error instanceof Error ? error.message : String(error)))
   }, 5000)
   context.subscriptions.push({ dispose: () => clearInterval(refreshTimer) })
-
-  const animationTimer = setInterval(() => {
-    provider.tickAnimation()
-  }, 250)
-  context.subscriptions.push({ dispose: () => clearInterval(animationTimer) })
 
   void provider.refresh().catch(error => showError(error))
 }
@@ -424,30 +405,16 @@ function tooltipFor (session: CdxSession): string {
   return lines.join('\n')
 }
 
-function sessionIcon (session: CdxSession, extensionUri: vscode.Uri, animationFrame: number): vscode.ThemeIcon | vscode.Uri {
-  if (isRunning(session)) {
-    return vscode.Uri.joinPath(extensionUri, 'media', runningIconFrameFile(animationFrame))
-  }
-  if (session.activity_state === 'unread' || session.unread) {
-    return new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('testing.iconFailed'))
-  }
-  if (session.activity_state === 'read' || session.bound) {
-    return new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('testing.iconPassed'))
+function sessionIcon (session: CdxSession): vscode.ThemeIcon {
+  const statusIcon = sessionStatusIcon(session)
+  if (statusIcon) {
+    return new vscode.ThemeIcon(statusIcon.codicon, new vscode.ThemeColor(statusIcon.color))
   }
   return new vscode.ThemeIcon(session.tmux_status === 'live' ? 'debug-console' : 'terminal')
 }
 
 function sessionIconLabel (session: CdxSession): string {
-  if (isRunning(session)) {
-    return '$(loading~spin)'
-  }
-  if (session.activity_state === 'unread' || session.unread) {
-    return '$(circle-filled)'
-  }
-  if (session.activity_state === 'read' || session.bound) {
-    return '$(pass-filled)'
-  }
-  return ''
+  return sessionStatusIcon(session)?.label || ''
 }
 
 function viewState (session: CdxSession): string {

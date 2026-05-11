@@ -2,12 +2,17 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 
 const {
-  runningIconFrameFile,
-  sessionDescription
+  sessionDescription,
+  sessionStatusIcon,
+  sortSessionsForSidebar
 } = require('../vscode-extension/out/sessionView')
 
-test('uses different icon files for adjacent running animation frames', () => {
-  assert.notEqual(runningIconFrameFile(0), runningIconFrameFile(1))
+test('running session uses a static orange dot icon', () => {
+  assert.deepEqual(sessionStatusIcon({ activity_state: 'running' }), {
+    codicon: 'circle-filled',
+    color: 'charts.orange',
+    label: '$(circle-filled)'
+  })
 })
 
 test('running session elapsed time advances from activity start time', () => {
@@ -18,4 +23,23 @@ test('running session elapsed time advances from activity start time', () => {
   }
 
   assert.equal(sessionDescription(session, Date.parse('2026-05-11T02:01:05Z')), '1:05')
+})
+
+test('sidebar order is stable by creation time, not last access time', () => {
+  const sessions = [
+    {
+      id: 'old',
+      name: 'old session',
+      created_at: '2026-05-10T00:00:00Z',
+      last_used_at: '2026-05-11T12:00:00Z'
+    },
+    {
+      id: 'new',
+      name: 'new session',
+      created_at: '2026-05-11T00:00:00Z',
+      last_used_at: '2026-05-11T01:00:00Z'
+    }
+  ]
+
+  assert.deepEqual(sortSessionsForSidebar(sessions).map(session => session.id), ['new', 'old'])
 })

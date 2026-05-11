@@ -2,28 +2,63 @@ export interface SessionViewState {
   activity_state?: string | null
   activity_started_at?: string | null
   activity_elapsed_seconds?: number | null
+  unread?: boolean
+  bound?: boolean
 }
 
-export const RUNNING_ICON_FRAME_FILES = [
-  'spinner-0.svg',
-  'spinner-1.svg',
-  'spinner-2.svg',
-  'spinner-3.svg',
-  'spinner-4.svg',
-  'spinner-5.svg',
-  'spinner-6.svg',
-  'spinner-7.svg'
-]
+export interface SessionSortState {
+  id?: string | null
+  name?: string | null
+  created_at?: string | null
+}
 
-export const RUNNING_ICON_FRAME_COUNT = RUNNING_ICON_FRAME_FILES.length
+export interface SessionStatusIcon {
+  codicon: string
+  color: string
+  label: string
+}
 
 export function isRunning (session: SessionViewState): boolean {
   return session.activity_state === 'running'
 }
 
-export function runningIconFrameFile (frame: number): string {
-  const index = positiveModulo(Math.floor(frame), RUNNING_ICON_FRAME_COUNT)
-  return RUNNING_ICON_FRAME_FILES[index]
+export function sessionStatusIcon (session: SessionViewState): SessionStatusIcon | undefined {
+  if (isRunning(session)) {
+    return {
+      codicon: 'circle-filled',
+      color: 'charts.orange',
+      label: '$(circle-filled)'
+    }
+  }
+  if (session.activity_state === 'unread' || session.unread) {
+    return {
+      codicon: 'circle-filled',
+      color: 'testing.iconFailed',
+      label: '$(circle-filled)'
+    }
+  }
+  if (session.activity_state === 'read' || session.bound) {
+    return {
+      codicon: 'circle-filled',
+      color: 'testing.iconPassed',
+      label: '$(pass-filled)'
+    }
+  }
+  return undefined
+}
+
+export function sortSessionsForSidebar<T extends SessionSortState> (sessions: T[]): T[] {
+  return [...sessions].sort((left, right) => {
+    const byCreated = timestamp(right.created_at) - timestamp(left.created_at)
+    if (byCreated !== 0) {
+      return byCreated
+    }
+    const byName = String(left.name || '').localeCompare(String(right.name || ''))
+    if (byName !== 0) {
+      return byName
+    }
+    return String(left.id || '').localeCompare(String(right.id || ''))
+  })
 }
 
 export function sessionDescription (session: SessionViewState, nowMs = Date.now()): string {
@@ -58,6 +93,10 @@ export function formatElapsed (seconds: number): string {
   return `${minutes}:${String(secs).padStart(2, '0')}`
 }
 
-function positiveModulo (value: number, divisor: number): number {
-  return ((value % divisor) + divisor) % divisor
+function timestamp (value: string | null | undefined): number {
+  if (!value) {
+    return 0
+  }
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : 0
 }

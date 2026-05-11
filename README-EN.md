@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.9 - Running Orange Dot and Stable Ordering
+
+- Download: [codex-deck-vscode-0.1.9.vsix](releases/codex-deck-vscode-0.1.9.vsix)
+- Update: running Codex sessions now use a static orange dot in the VS Code sidebar instead of a loading animation; the sidebar is ordered by creation time and no longer jumps recently opened sessions to the top.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.9.vsix
+```
+
 ### v0.1.8 - New Session Binding Fallback
 
 - Download: [codex-deck-vscode-0.1.8.vsix](releases/codex-deck-vscode-0.1.8.vsix)
