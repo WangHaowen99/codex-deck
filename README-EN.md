@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.11 - Metrics Display Fallback
+
+- Download: [codex-deck-vscode-0.1.11.vsix](releases/codex-deck-vscode-0.1.11.vsix)
+- Update: the VS Code extension now falls back to parsing Codex transcripts when the remote `cdx` command does not report metric fields yet; the sidebar metric text is shorter to reduce clipping in narrow sidebars.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.11.vsix
+```
+
 ### v0.1.10 - Session Metrics Display
 
 - Download: [codex-deck-vscode-0.1.10.vsix](releases/codex-deck-vscode-0.1.10.vsix)

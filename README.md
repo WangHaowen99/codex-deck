@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.11 - 指标显示兜底修复
+
+- 下载：[codex-deck-vscode-0.1.11.vsix](releases/codex-deck-vscode-0.1.11.vsix)
+- 更新：VS Code 插件会在远端 `cdx` 还未返回指标字段时，从 Codex transcript 兜底解析总 token、对话轮数和上下文占比；侧边栏指标文案也改为更短格式，减少窄侧边栏裁剪。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.11.vsix
+```
+
 ### v0.1.10 - 会话指标显示
 
 - 下载：[codex-deck-vscode-0.1.10.vsix](releases/codex-deck-vscode-0.1.10.vsix)

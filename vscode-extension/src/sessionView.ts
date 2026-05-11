@@ -78,15 +78,15 @@ export function sessionMetricParts (session: SessionViewState): string[] {
   const turns = finiteMetric(session.turn_count)
   if (turns !== undefined) {
     const count = Math.max(0, Math.floor(turns))
-    parts.push(`${count} ${count === 1 ? 'turn' : 'turns'}`)
+    parts.push(`${count}轮`)
   }
   const totalTokens = finiteMetric(session.total_tokens)
   if (totalTokens !== undefined) {
-    parts.push(`${formatTokenCount(totalTokens)} tok`)
+    parts.push(formatTokenCount(totalTokens))
   }
   const contextPercent = finiteMetric(session.context_percent)
   if (contextPercent !== undefined) {
-    parts.push(`ctx ${Math.max(0, Math.round(contextPercent))}%`)
+    parts.push(`${Math.max(0, Math.round(contextPercent))}% ctx`)
   }
   return parts
 }

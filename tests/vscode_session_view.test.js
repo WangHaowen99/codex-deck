@@ -32,7 +32,7 @@ test('sidebar description includes compact transcript metrics', () => {
     context_percent: 74.2
   }
 
-  assert.equal(sessionDescription(session), '12 turns · 1.4M tok · ctx 74%')
+  assert.equal(sessionDescription(session), '12轮 · 1.4M · 74% ctx')
 })
 
 test('running sidebar description includes elapsed time before metrics', () => {
@@ -45,7 +45,7 @@ test('running sidebar description includes elapsed time before metrics', () => {
     context_percent: 74.2
   }
 
-  assert.equal(sessionDescription(session, Date.parse('2026-05-11T02:01:05Z')), '1:05 · 12 turns · 1.4M tok · ctx 74%')
+  assert.equal(sessionDescription(session, Date.parse('2026-05-11T02:01:05Z')), '1:05 · 12轮 · 1.4M · 74% ctx')
 })
 
 test('sidebar order is stable by creation time, not last access time', () => {

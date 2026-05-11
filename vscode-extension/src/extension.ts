@@ -1,7 +1,9 @@
 import * as vscode from 'vscode'
 import { execFile } from 'child_process'
+import * as fs from 'fs/promises'
 import * as os from 'os'
 import { TerminalRegistry } from './terminalRegistry'
+import { hydrateTranscriptMetrics } from './sessionMetrics'
 import {
   formatElapsed,
   isRunning,
@@ -61,7 +63,7 @@ class CdxClient {
     if (!data.ok) {
       throw new Error(data.error || 'cdx list failed')
     }
-    return data.sessions || []
+    return hydrateTranscriptMetrics(data.sessions || [], path => fs.readFile(path, 'utf8'))
   }
 
   async create (name: string, cwd: string): Promise<CdxSession> {

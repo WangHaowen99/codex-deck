@@ -26,6 +26,8 @@ results.
 
 The sidebar also displays per-session metrics from `cdx list --json`: total
 tokens, user turn count, and current context usage percentage.
+If the remote `cdx` command does not report those fields yet, the extension
+falls back to parsing the session transcript path returned by `cdx list --json`.
 
 ## Development
 
