@@ -402,6 +402,213 @@ class ViewStateTests(unittest.TestCase):
                 cdx.LOCK_PATH = old_lock_path
                 cdx.CODEX_SHELL_SNAPSHOTS_DIR = old_snapshots_dir
 
+    def test_hook_rebinds_existing_cdx_session_after_codex_new(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            registry_path = tmp_path / "sessions.json"
+            lock_path = tmp_path / "lock"
+            old_transcript = tmp_path / "old.jsonl"
+            new_transcript = tmp_path / "new.jsonl"
+            write_events(
+                old_transcript,
+                [
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {"total_tokens": 1000},
+                                "last_token_usage": {"total_tokens": 100},
+                                "model_context_window": 1000,
+                            },
+                        },
+                    }
+                ],
+            )
+            write_events(
+                new_transcript,
+                [
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "新对话第一轮"}],
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {"total_tokens": 4096},
+                                "last_token_usage": {"total_tokens": 1024},
+                                "model_context_window": 4096,
+                            },
+                        },
+                    },
+                ],
+            )
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "version": cdx.VERSION,
+                        "sessions": [
+                            {
+                                "id": "abc123",
+                                "name": "demo",
+                                "tmux_session": "cdx_abc123",
+                                "codex_session_id": "old-codex",
+                                "created_at": "2026-05-11T02:24:30Z",
+                                "updated_at": "2026-05-11T02:24:30Z",
+                                "last_used_at": "2026-05-11T02:24:30Z",
+                                "last_viewed_at": "2026-05-11T02:24:30Z",
+                                "transcript_path": str(old_transcript),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            old_registry_path = cdx.REGISTRY_PATH
+            old_lock_path = cdx.LOCK_PATH
+            old_stdin = sys.stdin
+            old_env = os.environ.get("CDX_SESSION_ID")
+            cdx.REGISTRY_PATH = registry_path
+            cdx.LOCK_PATH = lock_path
+            sys.stdin = io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "new-codex",
+                        "transcript_path": str(new_transcript),
+                        "source": "startup",
+                    }
+                )
+            )
+            os.environ["CDX_SESSION_ID"] = "abc123"
+            try:
+                self.assertEqual(cdx.cmd_hook_session_start([]), 0)
+                refreshed = cdx.load_registry()["sessions"][0]
+                data = cdx.session_json(refreshed, include_status=False)
+            finally:
+                cdx.REGISTRY_PATH = old_registry_path
+                cdx.LOCK_PATH = old_lock_path
+                sys.stdin = old_stdin
+                if old_env is None:
+                    os.environ.pop("CDX_SESSION_ID", None)
+                else:
+                    os.environ["CDX_SESSION_ID"] = old_env
+
+            self.assertEqual(refreshed["codex_session_id"], "new-codex")
+            self.assertEqual(refreshed["transcript_path"], str(new_transcript))
+            self.assertEqual(data["total_tokens"], 4096)
+            self.assertEqual(data["turn_count"], 1)
+            self.assertEqual(data["context_percent"], 25)
+
+    def test_hook_does_not_rebind_cdx_session_to_subagent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            registry_path = tmp_path / "sessions.json"
+            lock_path = tmp_path / "lock"
+            old_transcript = tmp_path / "old.jsonl"
+            subagent_transcript = tmp_path / "subagent.jsonl"
+            write_events(
+                old_transcript,
+                [
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {"total_tokens": 1000},
+                                "last_token_usage": {"total_tokens": 100},
+                                "model_context_window": 1000,
+                            },
+                        },
+                    }
+                ],
+            )
+            write_events(
+                subagent_transcript,
+                [
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "subagent-codex",
+                            "thread_source": "subagent",
+                            "source": {"subagent": {"thread_spawn": {"parent_thread_id": "old-codex"}}},
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {"total_tokens": 4096},
+                                "last_token_usage": {"total_tokens": 1024},
+                                "model_context_window": 4096,
+                            },
+                        },
+                    },
+                ],
+            )
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "version": cdx.VERSION,
+                        "sessions": [
+                            {
+                                "id": "abc123",
+                                "name": "demo",
+                                "tmux_session": "cdx_abc123",
+                                "codex_session_id": "old-codex",
+                                "created_at": "2026-05-11T02:24:30Z",
+                                "updated_at": "2026-05-11T02:24:30Z",
+                                "last_used_at": "2026-05-11T02:24:30Z",
+                                "last_viewed_at": "2026-05-11T02:24:30Z",
+                                "transcript_path": str(old_transcript),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            old_registry_path = cdx.REGISTRY_PATH
+            old_lock_path = cdx.LOCK_PATH
+            old_stdin = sys.stdin
+            old_env = os.environ.get("CDX_SESSION_ID")
+            cdx.REGISTRY_PATH = registry_path
+            cdx.LOCK_PATH = lock_path
+            sys.stdin = io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "subagent-codex",
+                        "transcript_path": str(subagent_transcript),
+                        "source": "startup",
+                    }
+                )
+            )
+            os.environ["CDX_SESSION_ID"] = "abc123"
+            try:
+                self.assertEqual(cdx.cmd_hook_session_start([]), 0)
+                refreshed = cdx.load_registry()["sessions"][0]
+                data = cdx.session_json(refreshed, include_status=False)
+            finally:
+                cdx.REGISTRY_PATH = old_registry_path
+                cdx.LOCK_PATH = old_lock_path
+                sys.stdin = old_stdin
+                if old_env is None:
+                    os.environ.pop("CDX_SESSION_ID", None)
+                else:
+                    os.environ["CDX_SESSION_ID"] = old_env
+
+            self.assertEqual(refreshed["codex_session_id"], "old-codex")
+            self.assertEqual(refreshed["transcript_path"], str(old_transcript))
+            self.assertEqual(data["total_tokens"], 1000)
+            self.assertEqual(data["context_percent"], 10)
+
     def test_session_json_resolves_missing_transcript_path_from_rollout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

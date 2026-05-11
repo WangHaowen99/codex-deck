@@ -642,6 +642,35 @@ def transcript_task_window(path: str | None, *, max_lines: int = 1200) -> tuple[
     return latest_started, latest_complete
 
 
+def transcript_is_subagent(path: str | None, *, max_lines: int = 50) -> bool:
+    if not path:
+        return False
+    transcript = Path(path)
+    if not transcript.exists():
+        return False
+    try:
+        with transcript.open("r", encoding="utf-8", errors="ignore") as f:
+            for idx, line in enumerate(f):
+                if idx >= max_lines:
+                    break
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if item.get("type") != "session_meta":
+                    continue
+                payload = item.get("payload", {})
+                if not isinstance(payload, dict):
+                    return False
+                source = payload.get("source")
+                return payload.get("thread_source") == "subagent" or (
+                    isinstance(source, dict) and "subagent" in source
+                )
+    except OSError:
+        return False
+    return False
+
+
 def session_activity(session: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     if not session.get("codex_session_id"):
         return {"state": "none", "started_at": None, "elapsed_seconds": None}
@@ -1306,6 +1335,9 @@ def touch_last_used(session_id: str, *, mark_viewed: bool = False) -> None:
 
 def bind_cdx_session_to_codex_id(session_id: str, codex_id: str, *, source: str) -> bool:
     transcript_path = find_codex_transcript_path(codex_id)
+    if transcript_is_subagent(transcript_path):
+        log_event(f"{source} ignored subagent cdx_id={session_id} codex_id={codex_id}")
+        return True
     with registry_lock():
         registry = load_registry()
         session = find_session_by_id(registry, session_id)
@@ -1313,11 +1345,8 @@ def bind_cdx_session_to_codex_id(session_id: str, codex_id: str, *, source: str)
             log_event(f"{source} cdx session not found cdx_id={session_id} codex_id={codex_id}")
             return False
         existing = session.get("codex_session_id")
-        if existing and existing != codex_id:
-            log_event(f"{source} conflict cdx_id={session_id} existing={existing} incoming={codex_id}")
-            return False
         changed = existing != codex_id
-        if transcript_path and session.get("transcript_path") != transcript_path:
+        if changed or (transcript_path and session.get("transcript_path") != transcript_path):
             session["transcript_path"] = transcript_path
             changed = True
         if not changed:
@@ -1328,7 +1357,8 @@ def bind_cdx_session_to_codex_id(session_id: str, codex_id: str, *, source: str)
         session["last_viewed_at"] = later_time(ts, session_conversation_updated_at(session))
         session["updated_at"] = ts
         save_registry(registry)
-    log_event(f"{source} mapped cdx_id={session_id} codex_id={codex_id}")
+    action = "remapped" if existing else "mapped"
+    log_event(f"{source} {action} cdx_id={session_id} codex_id={codex_id}")
     return True
 
 
@@ -2448,6 +2478,10 @@ def cmd_hook_session_start(_: list[str]) -> int:
     cwd = payload.get("cwd")
     transcript_path = payload.get("transcript_path")
     source = payload.get("source")
+    new_transcript_path = transcript_path or find_codex_transcript_path(codex_id)
+    if transcript_is_subagent(new_transcript_path):
+        log_event(f"hook ignored subagent cdx_id={cdx_id} codex_id={codex_id} source={source}")
+        return 0
     with registry_lock():
         registry = load_registry()
         session = find_session_by_id(registry, cdx_id)
@@ -2455,19 +2489,20 @@ def cmd_hook_session_start(_: list[str]) -> int:
             log_event(f"hook cdx session not found cdx_id={cdx_id} codex_id={codex_id}")
             return 0
         existing = session.get("codex_session_id")
-        if existing and existing != codex_id:
-            log_event(f"hook conflict cdx_id={cdx_id} existing={existing} incoming={codex_id} source={source}")
-            return 0
         ts = now_utc()
         session["codex_session_id"] = codex_id
         if cwd:
             session["last_cwd"] = cwd
-        session["transcript_path"] = transcript_path or find_codex_transcript_path(codex_id) or session.get("transcript_path")
+        if existing != codex_id:
+            session["transcript_path"] = new_transcript_path
+        elif new_transcript_path:
+            session["transcript_path"] = new_transcript_path
         session["last_used_at"] = ts
         session["last_viewed_at"] = later_time(ts, session_conversation_updated_at(session))
         session["updated_at"] = ts
         save_registry(registry)
-    log_event(f"hook mapped cdx_id={cdx_id} codex_id={codex_id} source={source}")
+    action = "remapped" if existing else "mapped"
+    log_event(f"hook {action} cdx_id={cdx_id} codex_id={codex_id} source={source}")
     return 0
 
 
