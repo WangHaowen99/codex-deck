@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.13 - 调用详情与压缩详情
+
+- 下载：[codex-deck-vscode-0.1.13.vsix](releases/codex-deck-vscode-0.1.13.vsix)
+- 更新：tooltip 指标改为中文，并在提示中说明右键可查看固定详情页；侧边栏右键新增“查看调用失败原因”“查看工具调用详情”“查看压缩详情”，可检查失败原因、shell 命令、web 搜索、patch 修改、工具分布，以及每次压缩后的摘要和保留历史。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.13.vsix
+```
+
 ### v0.1.12 - Agent 动作分析指标
 
 - 下载：[codex-deck-vscode-0.1.12.vsix](releases/codex-deck-vscode-0.1.12.vsix)

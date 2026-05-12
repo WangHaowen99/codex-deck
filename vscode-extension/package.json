@@ -2,7 +2,7 @@
   "name": "codex-deck",
   "displayName": "Codex Deck",
   "description": "Manage Codex Deck sessions from the VS Code sidebar.",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "publisher": "codex-deck",
   "license": "MIT",
   "engines": {
@@ -21,7 +21,10 @@
     "onCommand:codexDeck.openSession",
     "onCommand:codexDeck.deleteSession",
     "onCommand:codexDeck.renameSession",
-    "onCommand:codexDeck.copyUuid"
+    "onCommand:codexDeck.copyUuid",
+    "onCommand:codexDeck.showFailureDetails",
+    "onCommand:codexDeck.showToolDetails",
+    "onCommand:codexDeck.showCompactionDetails"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -87,6 +90,21 @@
         "command": "codexDeck.copyUuid",
         "title": "Copy Codex UUID",
         "icon": "$(copy)"
+      },
+      {
+        "command": "codexDeck.showFailureDetails",
+        "title": "查看调用失败原因",
+        "icon": "$(warning)"
+      },
+      {
+        "command": "codexDeck.showToolDetails",
+        "title": "查看工具调用详情",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "codexDeck.showCompactionDetails",
+        "title": "查看压缩详情",
+        "icon": "$(archive)"
       }
     ],
     "menus": {
@@ -117,6 +135,21 @@
           "command": "codexDeck.copyUuid",
           "when": "view == codexDeck.sessions && viewItem == cdxSession",
           "group": "navigation@2"
+        },
+        {
+          "command": "codexDeck.showFailureDetails",
+          "when": "view == codexDeck.sessions && viewItem == cdxSession",
+          "group": "navigation@3"
+        },
+        {
+          "command": "codexDeck.showToolDetails",
+          "when": "view == codexDeck.sessions && viewItem == cdxSession",
+          "group": "navigation@4"
+        },
+        {
+          "command": "codexDeck.showCompactionDetails",
+          "when": "view == codexDeck.sessions && viewItem == cdxSession",
+          "group": "navigation@5"
         },
         {
           "command": "codexDeck.deleteSession",

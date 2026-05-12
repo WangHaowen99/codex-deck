@@ -3,6 +3,13 @@ import { execFile } from 'child_process'
 import * as fs from 'fs/promises'
 import * as os from 'os'
 import { TerminalRegistry } from './terminalRegistry'
+import {
+  renderCompactionDetails,
+  renderFailureDetails,
+  renderToolDetails,
+  transcriptDetailsFromJsonl,
+  type TranscriptDetails
+} from './sessionDetails'
 import { hydrateTranscriptMetrics } from './sessionMetrics'
 import {
   formatElapsed,
@@ -212,7 +219,10 @@ export function activate (context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codexDeck.openSession', async item => openSession(provider, terminals, item)),
     vscode.commands.registerCommand('codexDeck.renameSession', async item => renameSession(provider, item)),
     vscode.commands.registerCommand('codexDeck.deleteSession', async item => deleteSession(provider, item)),
-    vscode.commands.registerCommand('codexDeck.copyUuid', async item => copyUuid(provider, item))
+    vscode.commands.registerCommand('codexDeck.copyUuid', async item => copyUuid(provider, item)),
+    vscode.commands.registerCommand('codexDeck.showFailureDetails', async item => showFailureDetails(provider, item)),
+    vscode.commands.registerCommand('codexDeck.showToolDetails', async item => showToolDetails(provider, item)),
+    vscode.commands.registerCommand('codexDeck.showCompactionDetails', async item => showCompactionDetails(provider, item))
   )
 
   const refreshTimer = setInterval(() => {
@@ -316,6 +326,58 @@ async function copyUuid (provider: SessionsProvider, item: unknown): Promise<voi
   vscode.window.showInformationMessage(`Copied UUID for "${session.name}".`)
 }
 
+async function showFailureDetails (provider: SessionsProvider, item: unknown): Promise<void> {
+  await showTranscriptDetails(
+    provider,
+    item,
+    '查看调用失败原因',
+    (session, details) => renderFailureDetails(session.name, details)
+  )
+}
+
+async function showToolDetails (provider: SessionsProvider, item: unknown): Promise<void> {
+  await showTranscriptDetails(
+    provider,
+    item,
+    '查看工具调用详情',
+    (session, details) => renderToolDetails(session.name, details)
+  )
+}
+
+async function showCompactionDetails (provider: SessionsProvider, item: unknown): Promise<void> {
+  await showTranscriptDetails(
+    provider,
+    item,
+    '查看压缩详情',
+    (session, details) => renderCompactionDetails(session.name, details)
+  )
+}
+
+async function showTranscriptDetails (
+  provider: SessionsProvider,
+  item: unknown,
+  title: string,
+  render: (session: CdxSession, details: TranscriptDetails) => string
+): Promise<void> {
+  const session = await sessionFrom(provider, item, `${title}：选择 cdx 会话`)
+  if (!session) {
+    return
+  }
+  await runAction(title, async () => {
+    if (!session.transcript_path) {
+      vscode.window.showInformationMessage(`"${session.name}" 还没有可读取的 Codex transcript。`)
+      return
+    }
+    const transcript = await fs.readFile(session.transcript_path, 'utf8')
+    const details = transcriptDetailsFromJsonl(transcript)
+    const document = await vscode.workspace.openTextDocument({
+      content: render(session, details),
+      language: 'markdown'
+    })
+    await vscode.window.showTextDocument(document, { preview: false })
+  })
+}
+
 async function markSessionViewed (provider: SessionsProvider, session: CdxSession): Promise<void> {
   await provider.client.markViewed(session.name)
   await provider.refresh()
@@ -406,24 +468,25 @@ function defaultCwd (): string {
 function tooltipFor (session: CdxSession): string {
   const lines = [
     session.name,
-    `status: ${viewState(session)}`
+    `状态：${viewState(session)}`
   ]
   if (isRunning(session)) {
-    lines.push(`elapsed: ${formatElapsed(runningElapsedSeconds(session))}`)
+    lines.push(`运行时长：${formatElapsed(runningElapsedSeconds(session))}`)
   }
   lines.push(...sessionTooltipMetricLines(session))
   if (session.last_cwd) {
-    lines.push(`cwd: ${session.last_cwd}`)
+    lines.push(`目录：${session.last_cwd}`)
   }
   if (session.codex_session_id) {
-    lines.push(`uuid: ${session.codex_session_id}`)
+    lines.push(`UUID：${session.codex_session_id}`)
   }
   if (session.last_viewed_at) {
-    lines.push(`last viewed: ${session.last_viewed_at}`)
+    lines.push(`上次查看：${session.last_viewed_at}`)
   }
   if (session.conversation_updated_at) {
-    lines.push(`conversation updated: ${session.conversation_updated_at}`)
+    lines.push(`对话更新：${session.conversation_updated_at}`)
   }
+  lines.push('更多详情：右键会话查看失败原因、工具调用详情或压缩详情。')
   return lines.join('\n')
 }
 
@@ -441,9 +504,18 @@ function sessionIconLabel (session: CdxSession): string {
 
 function viewState (session: CdxSession): string {
   if (session.activity_state) {
+    if (session.activity_state === 'running') {
+      return '运行中'
+    }
+    if (session.activity_state === 'unread') {
+      return '未读'
+    }
+    if (session.activity_state === 'read') {
+      return '已读'
+    }
     return session.activity_state
   }
-  return session.unread ? 'unread' : 'viewed'
+  return session.unread ? '未读' : '已读'
 }
 
 function isSession (value: unknown): value is CdxSession {

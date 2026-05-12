@@ -33,6 +33,10 @@ Hovering a session shows additional agent action details such as tool breakdown,
 edited file count, command success rate, command time, latest turn time, and
 first-token latency.
 
+For details that need more reading time, right-click a session and open the
+persistent Markdown views for failure reasons, tool call details, or compaction
+details.
+
 ## Development
 
 ```bash

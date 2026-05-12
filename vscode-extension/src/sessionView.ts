@@ -126,11 +126,11 @@ export function sessionTooltipMetricLines (session: SessionViewState): string[] 
   const lines: string[] = []
   const turns = finiteMetric(session.turn_count)
   if (turns !== undefined) {
-    lines.push(`turns: ${formatWholeNumber(turns)}`)
+    lines.push(`对话轮数：${formatWholeNumber(turns)}`)
   }
   const totalTokens = finiteMetric(session.total_tokens)
   if (totalTokens !== undefined) {
-    lines.push(`total tokens: ${formatWholeNumber(totalTokens)}`)
+    lines.push(`总 token：${formatWholeNumber(totalTokens)}`)
   }
   const contextPercent = finiteMetric(session.context_percent)
   if (contextPercent !== undefined) {
@@ -138,26 +138,26 @@ export function sessionTooltipMetricLines (session: SessionViewState): string[] 
     const contextTokens = finiteMetric(session.context_tokens)
     const contextWindow = finiteMetric(session.context_window)
     if (contextTokens !== undefined && contextWindow !== undefined) {
-      lines.push(`context: ${percent} (${formatWholeNumber(contextTokens)} / ${formatWholeNumber(contextWindow)})`)
+      lines.push(`上下文：${percent} (${formatWholeNumber(contextTokens)} / ${formatWholeNumber(contextWindow)})`)
     } else {
-      lines.push(`context: ${percent}`)
+      lines.push(`上下文：${percent}`)
     }
   }
   const compactions = finiteMetric(session.compaction_count)
   if (compactions !== undefined) {
-    lines.push(`compactions: ${formatWholeNumber(compactions)}`)
+    lines.push(`压缩次数：${formatWholeNumber(compactions)}`)
   }
   const toolCalls = finiteMetric(session.tool_call_count)
   if (toolCalls !== undefined) {
-    lines.push(`tool calls: ${formatWholeNumber(toolCalls)}`)
+    lines.push(`工具调用：${formatWholeNumber(toolCalls)}`)
   }
   const cacheHit = finiteMetric(session.cache_hit_percent)
   if (cacheHit !== undefined) {
-    lines.push(`cache hit: ${Math.max(0, Math.round(cacheHit))}%`)
+    lines.push(`缓存命中：${Math.max(0, Math.round(cacheHit))}%`)
   }
   const failures = finiteMetric(session.failure_count)
   if (failures !== undefined) {
-    lines.push(`failures: ${formatWholeNumber(failures)}`)
+    lines.push(`失败次数：${formatWholeNumber(failures)}`)
   }
   const toolBreakdown = toolBreakdownLine(session)
   if (toolBreakdown) {
@@ -165,23 +165,23 @@ export function sessionTooltipMetricLines (session: SessionViewState): string[] 
   }
   const editedFiles = positiveMetric(session.edited_file_count)
   if (editedFiles !== undefined) {
-    lines.push(`edited files: ${formatWholeNumber(editedFiles)}`)
+    lines.push(`编辑文件：${formatWholeNumber(editedFiles)}`)
   }
   const commandSuccess = finiteMetric(session.command_success_percent)
   if (commandSuccess !== undefined) {
-    lines.push(`command success: ${Math.max(0, Math.round(commandSuccess))}%`)
+    lines.push(`命令成功率：${Math.max(0, Math.round(commandSuccess))}%`)
   }
   const commandDuration = positiveMetric(session.command_duration_seconds)
   if (commandDuration !== undefined) {
-    lines.push(`command time: ${formatElapsed(commandDuration)}`)
+    lines.push(`命令耗时：${formatElapsed(commandDuration)}`)
   }
   const lastTurnDuration = positiveMetric(session.last_turn_duration_seconds)
   if (lastTurnDuration !== undefined) {
-    lines.push(`last turn: ${formatElapsed(lastTurnDuration)}`)
+    lines.push(`最近一轮：${formatElapsed(lastTurnDuration)}`)
   }
   const firstToken = positiveMetric(session.time_to_first_token_ms)
   if (firstToken !== undefined) {
-    lines.push(`first token: ${firstToken}ms`)
+    lines.push(`首 token：${firstToken}ms`)
   }
   return lines
 }
@@ -264,9 +264,9 @@ function toolBreakdownLine (session: SessionViewState): string | undefined {
   }
   const subagents = positiveMetric(session.subagent_count)
   if (subagents !== undefined) {
-    parts.push(`subagents ${subagents}`)
+    parts.push(`subagent ${subagents}`)
   }
-  return parts.length ? `tools: ${parts.join(', ')}` : undefined
+  return parts.length ? `工具分布：${parts.join(', ')}` : undefined
 }
 
 function timestamp (value: string | null | undefined): number {

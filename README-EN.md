@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.13 - Call Details and Compaction Details
+
+- Download: [codex-deck-vscode-0.1.13.vsix](releases/codex-deck-vscode-0.1.13.vsix)
+- Update: tooltip metrics are now localized in Chinese and point to persistent right-click detail views. The sidebar context menu adds "查看调用失败原因", "查看工具调用详情", and "查看压缩详情" to inspect failure reasons, shell commands, web searches, patch changes, tool distribution, and each compaction summary with retained history.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.13.vsix
+```
+
 ### v0.1.12 - Agent Action Metrics
 
 - Download: [codex-deck-vscode-0.1.12.vsix](releases/codex-deck-vscode-0.1.12.vsix)

@@ -94,19 +94,19 @@ test('tooltip metric lines include action analysis details', () => {
   }
 
   assert.deepEqual(sessionTooltipMetricLines(session), [
-    'turns: 12',
-    'total tokens: 1,400,000',
-    'context: 74% (740 / 1,000)',
-    'compactions: 1',
-    'tool calls: 8',
-    'cache hit: 82%',
-    'failures: 2',
-    'tools: shell 4, web 1, patch 2, subagents 1',
-    'edited files: 3',
-    'command success: 75%',
-    'command time: 1:05',
-    'last turn: 0:42',
-    'first token: 789ms'
+    '对话轮数：12',
+    '总 token：1,400,000',
+    '上下文：74% (740 / 1,000)',
+    '压缩次数：1',
+    '工具调用：8',
+    '缓存命中：82%',
+    '失败次数：2',
+    '工具分布：shell 4, web 1, patch 2, subagent 1',
+    '编辑文件：3',
+    '命令成功率：75%',
+    '命令耗时：1:05',
+    '最近一轮：0:42',
+    '首 token：789ms'
   ])
 })
 
