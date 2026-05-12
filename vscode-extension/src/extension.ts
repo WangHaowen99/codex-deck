@@ -10,6 +10,7 @@ import {
   runningElapsedSeconds,
   sessionDescription,
   sessionStatusIcon,
+  sessionTooltipMetricLines,
   sortSessionsForSidebar
 } from './sessionView'
 
@@ -30,6 +31,19 @@ interface CdxSession {
   context_tokens?: number | null
   context_window?: number | null
   context_percent?: number | null
+  compaction_count?: number | null
+  tool_call_count?: number | null
+  cache_hit_percent?: number | null
+  failure_count?: number | null
+  shell_command_count?: number | null
+  web_search_count?: number | null
+  patch_apply_count?: number | null
+  subagent_count?: number | null
+  edited_file_count?: number | null
+  command_success_percent?: number | null
+  command_duration_seconds?: number | null
+  last_turn_duration_seconds?: number | null
+  time_to_first_token_ms?: number | null
   last_cwd?: string | null
   created_at?: string | null
   updated_at?: string | null
@@ -397,7 +411,7 @@ function tooltipFor (session: CdxSession): string {
   if (isRunning(session)) {
     lines.push(`elapsed: ${formatElapsed(runningElapsedSeconds(session))}`)
   }
-  addMetricTooltipLines(lines, session)
+  lines.push(...sessionTooltipMetricLines(session))
   if (session.last_cwd) {
     lines.push(`cwd: ${session.last_cwd}`)
   }
@@ -411,34 +425,6 @@ function tooltipFor (session: CdxSession): string {
     lines.push(`conversation updated: ${session.conversation_updated_at}`)
   }
   return lines.join('\n')
-}
-
-function addMetricTooltipLines (lines: string[], session: CdxSession): void {
-  const turns = finiteNumber(session.turn_count)
-  if (turns !== undefined) {
-    lines.push(`turns: ${Math.max(0, Math.floor(turns)).toLocaleString('en-US')}`)
-  }
-  const totalTokens = finiteNumber(session.total_tokens)
-  if (totalTokens !== undefined) {
-    lines.push(`total tokens: ${Math.max(0, Math.floor(totalTokens)).toLocaleString('en-US')}`)
-  }
-  const contextPercent = finiteNumber(session.context_percent)
-  if (contextPercent !== undefined) {
-    const percent = `${Math.max(0, Math.round(contextPercent))}%`
-    const contextTokens = finiteNumber(session.context_tokens)
-    const contextWindow = finiteNumber(session.context_window)
-    if (contextTokens !== undefined && contextWindow !== undefined) {
-      const used = Math.max(0, Math.floor(contextTokens)).toLocaleString('en-US')
-      const window = Math.max(0, Math.floor(contextWindow)).toLocaleString('en-US')
-      lines.push(`context: ${percent} (${used} / ${window})`)
-    } else {
-      lines.push(`context: ${percent}`)
-    }
-  }
-}
-
-function finiteNumber (value: number | null | undefined): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function sessionIcon (session: CdxSession): vscode.ThemeIcon {

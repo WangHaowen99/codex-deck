@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.12 - Agent Action Metrics
+
+- Download: [codex-deck-vscode-0.1.12.vsix](releases/codex-deck-vscode-0.1.12.vsix)
+- Update: `cdx list --json` and the VS Code sidebar now show compaction count, tool call count, cache hit rate, and failure count. The tooltip adds shell / web / patch / subagent breakdowns, edited file count, command success rate, command time, latest turn time, and first-token latency.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.12.vsix
+```
+
 ### v0.1.11 - Metrics Display Fallback
 
 - Download: [codex-deck-vscode-0.1.11.vsix](releases/codex-deck-vscode-0.1.11.vsix)

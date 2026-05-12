@@ -185,6 +185,90 @@ class ViewStateTests(unittest.TestCase):
             self.assertEqual(metrics["context_window"], 258400)
             self.assertEqual(metrics["context_percent"], 50)
 
+    def test_transcript_metrics_include_agent_action_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "session.jsonl"
+            write_events(
+                transcript,
+                [
+                    {"timestamp": "2026-05-11T08:00:00.000Z", "type": "compacted", "payload": {"message": "summary"}},
+                    {"timestamp": "2026-05-11T08:00:00.002Z", "type": "event_msg", "payload": {"type": "context_compacted"}},
+                    {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "call_ok"}},
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "exec_command_end",
+                            "call_id": "call_ok",
+                            "exit_code": 0,
+                            "status": "completed",
+                            "duration": {"secs": 2, "nanos": 500000000},
+                        },
+                    },
+                    {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "call_fail"}},
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "exec_command_end",
+                            "call_id": "call_fail",
+                            "exit_code": 1,
+                            "status": "failed",
+                            "duration": {"secs": 3, "nanos": 200000000},
+                        },
+                    },
+                    {"type": "response_item", "payload": {"type": "function_call", "name": "spawn_agent", "call_id": "call_agent"}},
+                    {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "apply_patch", "call_id": "call_patch"}},
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "patch_apply_end",
+                            "call_id": "call_patch",
+                            "success": True,
+                            "status": "completed",
+                            "changes": {
+                                "/repo/a.py": {"type": "update"},
+                                "/repo/b.py": {"type": "add"},
+                            },
+                        },
+                    },
+                    {"type": "response_item", "payload": {"type": "web_search_call", "status": "completed"}},
+                    {"type": "event_msg", "payload": {"type": "error", "message": "rate limited"}},
+                    {"type": "event_msg", "payload": {"type": "turn_aborted", "reason": "interrupted", "duration_ms": 123456}},
+                    {"type": "event_msg", "payload": {"type": "task_complete", "duration_ms": 42000, "time_to_first_token_ms": 789}},
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {
+                                    "input_tokens": 1000,
+                                    "cached_input_tokens": 750,
+                                    "output_tokens": 200,
+                                    "total_tokens": 1200,
+                                },
+                                "last_token_usage": {"total_tokens": 300},
+                                "model_context_window": 1000,
+                            },
+                        },
+                    },
+                ],
+            )
+
+            metrics = cdx.transcript_metrics(str(transcript))
+
+            self.assertEqual(metrics["compaction_count"], 1)
+            self.assertEqual(metrics["tool_call_count"], 5)
+            self.assertEqual(metrics["cache_hit_percent"], 75)
+            self.assertEqual(metrics["failure_count"], 3)
+            self.assertEqual(metrics["shell_command_count"], 2)
+            self.assertEqual(metrics["web_search_count"], 1)
+            self.assertEqual(metrics["patch_apply_count"], 1)
+            self.assertEqual(metrics["subagent_count"], 1)
+            self.assertEqual(metrics["edited_file_count"], 2)
+            self.assertEqual(metrics["command_success_percent"], 50)
+            self.assertEqual(metrics["command_duration_seconds"], 6)
+            self.assertEqual(metrics["last_turn_duration_seconds"], 42)
+            self.assertEqual(metrics["time_to_first_token_ms"], 789)
+
     def test_session_json_includes_transcript_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             transcript = Path(tmp) / "session.jsonl"
@@ -232,6 +316,8 @@ class ViewStateTests(unittest.TestCase):
             self.assertEqual(data["context_tokens"], 1280)
             self.assertEqual(data["context_window"], 4096)
             self.assertEqual(data["context_percent"], 31)
+            self.assertEqual(data["tool_call_count"], 0)
+            self.assertEqual(data["failure_count"], 0)
 
     def test_mark_viewed_command_clears_unread_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

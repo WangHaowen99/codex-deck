@@ -25,9 +25,13 @@ Completed sessions use a red dot for unread results and a green dot for read
 results.
 
 The sidebar also displays per-session metrics from `cdx list --json`: total
-tokens, user turn count, and current context usage percentage.
+tokens, user turn count, current context usage percentage, compaction count,
+tool call count, cache hit rate, and failure count.
 If the remote `cdx` command does not report those fields yet, the extension
 falls back to parsing the session transcript path returned by `cdx list --json`.
+Hovering a session shows additional agent action details such as tool breakdown,
+edited file count, command success rate, command time, latest turn time, and
+first-token latency.
 
 ## Development
 

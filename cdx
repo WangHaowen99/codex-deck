@@ -767,6 +767,19 @@ def empty_transcript_metrics() -> dict[str, int | None]:
         "context_tokens": None,
         "context_window": None,
         "context_percent": None,
+        "compaction_count": 0,
+        "tool_call_count": 0,
+        "cache_hit_percent": None,
+        "failure_count": 0,
+        "shell_command_count": 0,
+        "web_search_count": 0,
+        "patch_apply_count": 0,
+        "subagent_count": 0,
+        "edited_file_count": 0,
+        "command_success_percent": None,
+        "command_duration_seconds": 0,
+        "last_turn_duration_seconds": None,
+        "time_to_first_token_ms": None,
     }
 
 
@@ -795,6 +808,41 @@ def usage_total_tokens(usage: Any) -> int | None:
     return sum(part or 0 for part in parts)
 
 
+def usage_input_tokens(usage: Any) -> int | None:
+    if not isinstance(usage, dict):
+        return None
+    return int_token_value(usage.get("input_tokens"))
+
+
+def usage_cached_input_tokens(usage: Any) -> int | None:
+    if not isinstance(usage, dict):
+        return None
+    return int_token_value(usage.get("cached_input_tokens"))
+
+
+def duration_seconds_value(duration: Any) -> float | None:
+    if not isinstance(duration, dict):
+        return None
+    secs = duration.get("secs")
+    nanos = duration.get("nanos")
+    total = 0.0
+    found = False
+    if isinstance(secs, (int, float)) and not isinstance(secs, bool) and secs >= 0:
+        total += float(secs)
+        found = True
+    if isinstance(nanos, (int, float)) and not isinstance(nanos, bool) and nanos >= 0:
+        total += float(nanos) / 1_000_000_000
+        found = True
+    return total if found else None
+
+
+def milliseconds_to_seconds(value: Any) -> int | None:
+    millis = int_token_value(value)
+    if millis is None:
+        return None
+    return round(millis / 1000)
+
+
 def transcript_metrics(path: str | None) -> dict[str, int | None]:
     metrics = empty_transcript_metrics()
     if not path:
@@ -805,6 +853,11 @@ def transcript_metrics(path: str | None) -> dict[str, int | None]:
     turn_count = 0
     last_turn_text: str | None = None
     last_turn_time: datetime | None = None
+    compaction_positions: list[tuple[float | None, int]] = []
+    edited_file_paths: set[str] = set()
+    command_count = 0
+    command_success_count = 0
+    command_duration_total = 0.0
 
     def add_user_turn(text: str | None, timestamp: str | None) -> None:
         nonlocal last_turn_text, last_turn_time, turn_count
@@ -821,16 +874,45 @@ def transcript_metrics(path: str | None) -> dict[str, int | None]:
         last_turn_text = visible
         last_turn_time = turn_time
 
+    def add_compaction(timestamp: str | None, line_no: int) -> None:
+        parsed = parse_iso(timestamp) if isinstance(timestamp, str) else None
+        seconds = parsed.timestamp() if parsed else None
+        for previous_seconds, previous_line in compaction_positions:
+            if seconds is not None and previous_seconds is not None:
+                if abs(seconds - previous_seconds) <= 1:
+                    return
+            elif seconds is None and previous_seconds is None and abs(line_no - previous_line) <= 2:
+                return
+        compaction_positions.append((seconds, line_no))
+        metrics["compaction_count"] = (metrics["compaction_count"] or 0) + 1
+
     try:
         with transcript.open("r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
+            for line_no, line in enumerate(f, start=1):
                 try:
                     item = json.loads(line)
                 except json.JSONDecodeError:
                     continue
                 payload = item.get("payload", {})
+                item_type = item.get("type")
+                if item_type == "compacted":
+                    timestamp = item.get("timestamp")
+                    add_compaction(timestamp if isinstance(timestamp, str) else None, line_no)
                 if item.get("type") == "response_item" and isinstance(payload, dict):
-                    if payload.get("type") == "message" and payload.get("role") == "user":
+                    payload_type = payload.get("type")
+                    if payload_type in {"function_call", "custom_tool_call", "web_search_call"}:
+                        metrics["tool_call_count"] = (metrics["tool_call_count"] or 0) + 1
+                    if payload_type == "function_call":
+                        name = payload.get("name")
+                        if name == "exec_command":
+                            metrics["shell_command_count"] = (metrics["shell_command_count"] or 0) + 1
+                        elif name == "spawn_agent":
+                            metrics["subagent_count"] = (metrics["subagent_count"] or 0) + 1
+                    elif payload_type == "custom_tool_call" and payload.get("name") == "apply_patch":
+                        metrics["patch_apply_count"] = (metrics["patch_apply_count"] or 0) + 1
+                    elif payload_type == "web_search_call":
+                        metrics["web_search_count"] = (metrics["web_search_count"] or 0) + 1
+                    if payload_type == "message" and payload.get("role") == "user":
                         timestamp = item.get("timestamp") or payload.get("timestamp")
                         add_user_turn(
                             extract_message_content_text(payload.get("content")),
@@ -846,11 +928,41 @@ def transcript_metrics(path: str | None) -> dict[str, int | None]:
                         message if isinstance(message, str) else None,
                         timestamp if isinstance(timestamp, str) else None,
                     )
+                elif event_type == "context_compacted":
+                    timestamp = item.get("timestamp")
+                    add_compaction(timestamp if isinstance(timestamp, str) else None, line_no)
+                elif event_type == "exec_command_end":
+                    command_count += 1
+                    exit_code = payload.get("exit_code")
+                    status = payload.get("status")
+                    succeeded = status == "completed" and exit_code == 0
+                    if succeeded:
+                        command_success_count += 1
+                    else:
+                        metrics["failure_count"] = (metrics["failure_count"] or 0) + 1
+                    duration = duration_seconds_value(payload.get("duration"))
+                    if duration is not None:
+                        command_duration_total += duration
+                elif event_type == "patch_apply_end":
+                    if payload.get("success") is False or payload.get("status") not in {None, "completed"}:
+                        metrics["failure_count"] = (metrics["failure_count"] or 0) + 1
+                    changes = payload.get("changes")
+                    if isinstance(changes, dict):
+                        edited_file_paths.update(str(path) for path in changes.keys())
+                elif event_type == "error":
+                    metrics["failure_count"] = (metrics["failure_count"] or 0) + 1
+                elif event_type == "turn_aborted":
+                    metrics["failure_count"] = (metrics["failure_count"] or 0) + 1
+                    metrics["last_turn_duration_seconds"] = milliseconds_to_seconds(payload.get("duration_ms"))
+                elif event_type == "task_complete":
+                    metrics["last_turn_duration_seconds"] = milliseconds_to_seconds(payload.get("duration_ms"))
+                    metrics["time_to_first_token_ms"] = int_token_value(payload.get("time_to_first_token_ms"))
                 elif event_type == "token_count":
                     info = payload.get("info")
                     if not isinstance(info, dict):
                         continue
-                    total_tokens = usage_total_tokens(info.get("total_token_usage"))
+                    total_usage = info.get("total_token_usage")
+                    total_tokens = usage_total_tokens(total_usage)
                     context_tokens = usage_total_tokens(info.get("last_token_usage"))
                     context_window = int_token_value(info.get("model_context_window"))
                     metrics["total_tokens"] = total_tokens
@@ -860,9 +972,19 @@ def transcript_metrics(path: str | None) -> dict[str, int | None]:
                         metrics["context_percent"] = round(context_tokens / context_window * 100)
                     else:
                         metrics["context_percent"] = None
+                    input_tokens = usage_input_tokens(total_usage)
+                    cached_tokens = usage_cached_input_tokens(total_usage)
+                    if input_tokens and input_tokens > 0 and cached_tokens is not None:
+                        metrics["cache_hit_percent"] = round(cached_tokens / input_tokens * 100)
+                    else:
+                        metrics["cache_hit_percent"] = None
     except OSError:
         return metrics
     metrics["turn_count"] = turn_count
+    metrics["edited_file_count"] = len(edited_file_paths)
+    metrics["command_duration_seconds"] = round(command_duration_total)
+    if command_count:
+        metrics["command_success_percent"] = round(command_success_count / command_count * 100)
     return metrics
 
 
@@ -914,6 +1036,19 @@ def session_json(session: dict[str, Any], *, include_status: bool = True) -> dic
         "context_tokens": metrics["context_tokens"],
         "context_window": metrics["context_window"],
         "context_percent": metrics["context_percent"],
+        "compaction_count": metrics["compaction_count"],
+        "tool_call_count": metrics["tool_call_count"],
+        "cache_hit_percent": metrics["cache_hit_percent"],
+        "failure_count": metrics["failure_count"],
+        "shell_command_count": metrics["shell_command_count"],
+        "web_search_count": metrics["web_search_count"],
+        "patch_apply_count": metrics["patch_apply_count"],
+        "subagent_count": metrics["subagent_count"],
+        "edited_file_count": metrics["edited_file_count"],
+        "command_success_percent": metrics["command_success_percent"],
+        "command_duration_seconds": metrics["command_duration_seconds"],
+        "last_turn_duration_seconds": metrics["last_turn_duration_seconds"],
+        "time_to_first_token_ms": metrics["time_to_first_token_ms"],
     }
     if include_status:
         data["tmux_status"] = tmux_status(session)

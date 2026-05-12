@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.12 - Agent 动作分析指标
+
+- 下载：[codex-deck-vscode-0.1.12.vsix](releases/codex-deck-vscode-0.1.12.vsix)
+- 更新：`cdx list --json` 和 VS Code 侧边栏新增压缩次数、工具调用次数、缓存命中率和失败次数；tooltip 展示 shell / web / patch / subagent 分布、编辑文件数、命令成功率、命令耗时、最近一轮耗时和首 token 延迟。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.12.vsix
+```
+
 ### v0.1.11 - 指标显示兜底修复
 
 - 下载：[codex-deck-vscode-0.1.11.vsix](releases/codex-deck-vscode-0.1.11.vsix)
