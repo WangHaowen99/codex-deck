@@ -42,6 +42,22 @@ class TmuxHistoryTests(unittest.TestCase):
             calls,
         )
 
+    def test_configure_tmux_session_uses_mobile_friendly_native_scroll(self) -> None:
+        calls: list[list[str]] = []
+        old_which = cdx.shutil.which
+        old_run = cdx.subprocess.run
+        cdx.shutil.which = lambda name: f"/usr/bin/{name}" if name == "tmux" else old_which(name)
+        cdx.subprocess.run = lambda args, **_kwargs: calls.append(list(args)) or Completed()
+        try:
+            cdx.configure_tmux_session("cdx_demo")
+        finally:
+            cdx.shutil.which = old_which
+            cdx.subprocess.run = old_run
+
+        self.assertIn(["tmux", "set-option", "-q", "-t", "cdx_demo", "mouse", "off"], calls)
+        self.assertNotIn(["tmux", "set-option", "-gq", "mouse", "on"], calls)
+        self.assertFalse(any(call[:2] == ["tmux", "bind-key"] for call in calls))
+
     def test_new_tmux_session_configures_history_before_starting_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -105,6 +121,13 @@ class TmuxHistoryTests(unittest.TestCase):
             send_keys_index = next(i for i, call in enumerate(calls) if call[:4] == ["tmux", "send-keys", "-t", "cdx_abc123"])
             self.assertLess(history_index, send_keys_index)
             self.assertIn("__runner abc123", calls[send_keys_index][-2])
+
+    def test_codex_runner_uses_no_alt_screen_for_scrollback(self) -> None:
+        self.assertEqual(cdx.codex_args_for_session({}), ["codex", "--no-alt-screen"])
+        self.assertEqual(
+            cdx.codex_args_for_session({"codex_session_id": "codex-1"}),
+            ["codex", "resume", "--no-alt-screen", "codex-1"],
+        )
 
 
 if __name__ == "__main__":

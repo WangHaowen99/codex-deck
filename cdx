@@ -405,12 +405,11 @@ def tmux_status(session: dict[str, Any]) -> str:
 def configure_tmux_session(tmux_name: str) -> None:
     if shutil.which("tmux") is None:
         return
-    configure_tmux_server()
     options = [
-        ("mouse", "on"),
+        ("mouse", "off"),
         ("history-limit", str(TMUX_HISTORY_LIMIT)),
         ("remain-on-exit", "off"),
-        ("@cdx_scroll_mode", "tmux-copy-mode"),
+        ("@cdx_scroll_mode", "native-scroll"),
     ]
     for option, value in options:
         result = subprocess.run(
@@ -421,7 +420,6 @@ def configure_tmux_session(tmux_name: str) -> None:
         )
         if result.returncode != 0:
             log_event(f"tmux option failed session={tmux_name} option={option} value={value}: {result.stderr.strip()}")
-    install_tmux_mouse_bindings()
 
 
 def configure_tmux_server() -> None:
@@ -2585,9 +2583,7 @@ def cmd_runner(args: list[str]) -> int:
         env["CDX_SESSION_ID"] = session["id"]
         env["CDX_NAME"] = session["name"]
         env["CDX_REGISTRY"] = str(REGISTRY_PATH)
-        args = ["codex"]
-        if session.get("codex_session_id"):
-            args = ["codex", "resume", session["codex_session_id"]]
+        args = codex_args_for_session(session)
         log_event(f"runner starting {' '.join(args)} for cdx id={session['id']}")
         started_at = time.time()
         if not session.get("codex_session_id"):
@@ -2606,6 +2602,12 @@ def cmd_runner(args: list[str]) -> int:
         return result.returncode
     except KeyboardInterrupt:
         return 130
+
+
+def codex_args_for_session(session: dict[str, Any]) -> list[str]:
+    if session.get("codex_session_id"):
+        return ["codex", "resume", "--no-alt-screen", session["codex_session_id"]]
+    return ["codex", "--no-alt-screen"]
 
 
 def cmd_hook_session_start(_: list[str]) -> int:
@@ -2666,9 +2668,6 @@ def main_menu() -> int:
                 ("3", "删除会话", "kill tmux 并删除 cdx 映射，不删 Codex 历史"),
                 ("4", "重命名会话", "修改用途名，live 会话也支持"),
                 ("5", "手动映射/导入", "绑定、导入、解除或转移 Codex 原始会话"),
-                ("6", "管理常用目录", "维护新建会话时可选的 root"),
-                ("7", "检查状态 doctor", "只报告问题，不自动修复"),
-                ("8", "查看 UUID", "显示 cdx 会话绑定的 Codex session id"),
                 ("0", "退出", "离开 cdx 菜单"),
             ],
             subtitle,
@@ -2685,12 +2684,6 @@ def main_menu() -> int:
             cmd_rename([])
         elif choice == "5":
             cmd_map([])
-        elif choice == "6":
-            cmd_roots([])
-        elif choice == "7":
-            cmd_doctor([])
-        elif choice == "8":
-            cmd_uuid([])
         elif choice in {"0", "q", "Q"}:
             return 0
         else:
