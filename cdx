@@ -29,6 +29,7 @@ VERSION = 1
 MAX_NAME_LEN = 60
 RAW_IMPORT_PREVIEW_LIMIT = 30
 TMUX_HISTORY_LIMIT = 200000
+TMUX_SCROLL_LINES = 12
 CDX_HOOK_STATUS = "cdx session mapping"
 COLOR_ENABLED = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 ASCII_BANNER = [
@@ -406,10 +407,10 @@ def configure_tmux_session(tmux_name: str) -> None:
     if shutil.which("tmux") is None:
         return
     options = [
-        ("mouse", "off"),
+        ("mouse", "on"),
         ("history-limit", str(TMUX_HISTORY_LIMIT)),
         ("remain-on-exit", "off"),
-        ("@cdx_scroll_mode", "native-scroll"),
+        ("@cdx_scroll_mode", "accelerated-copy-mode"),
     ]
     for option, value in options:
         result = subprocess.run(
@@ -420,6 +421,7 @@ def configure_tmux_session(tmux_name: str) -> None:
         )
         if result.returncode != 0:
             log_event(f"tmux option failed session={tmux_name} option={option} value={value}: {result.stderr.strip()}")
+    install_tmux_mouse_bindings()
 
 
 def configure_tmux_server() -> None:
@@ -438,6 +440,7 @@ def configure_tmux_server() -> None:
 def install_tmux_mouse_bindings() -> None:
     if shutil.which("tmux") is None:
         return
+    scroll_lines = str(TMUX_SCROLL_LINES)
     bindings = [
         [
             "bind-key",
@@ -448,8 +451,8 @@ def install_tmux_mouse_bindings() -> None:
             "-F",
             "-t",
             "=",
-            "#{==:#{@cdx_scroll_mode},tmux-copy-mode}",
-            "if-shell -F -t = '#{pane_in_mode}' 'send-keys -M' 'copy-mode -e -t ='",
+            "#{==:#{@cdx_scroll_mode},accelerated-copy-mode}",
+            f"if-shell -F -t = '#{{pane_in_mode}}' 'send-keys -X -N {scroll_lines} scroll-up' 'copy-mode -e -t = \\; send-keys -X -N {scroll_lines} scroll-up'",
             "if-shell -F -t = '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -e -t ='",
         ],
         [
@@ -461,8 +464,8 @@ def install_tmux_mouse_bindings() -> None:
             "-F",
             "-t",
             "=",
-            "#{==:#{@cdx_scroll_mode},tmux-copy-mode}",
-            "if-shell -F -t = '#{pane_in_mode}' 'send-keys -M'",
+            "#{==:#{@cdx_scroll_mode},accelerated-copy-mode}",
+            f"if-shell -F -t = '#{{pane_in_mode}}' \"if-shell -F -t = '#{{pane_at_bottom}}' 'send-keys -X cancel' 'send-keys -X -N {scroll_lines} scroll-down'\" 'send-keys -M'",
             "send-keys -M",
         ],
     ]

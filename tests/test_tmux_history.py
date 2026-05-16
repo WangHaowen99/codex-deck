@@ -15,6 +15,7 @@ sys.modules[SPEC.name] = cdx
 SPEC.loader.exec_module(cdx)
 
 EXPECTED_HISTORY_LIMIT = "200000"
+EXPECTED_SCROLL_LINES = "12"
 
 
 class Completed:
@@ -42,7 +43,7 @@ class TmuxHistoryTests(unittest.TestCase):
             calls,
         )
 
-    def test_configure_tmux_session_uses_mobile_friendly_native_scroll(self) -> None:
+    def test_configure_tmux_session_uses_accelerated_mobile_scroll(self) -> None:
         calls: list[list[str]] = []
         old_which = cdx.shutil.which
         old_run = cdx.subprocess.run
@@ -54,9 +55,12 @@ class TmuxHistoryTests(unittest.TestCase):
             cdx.shutil.which = old_which
             cdx.subprocess.run = old_run
 
-        self.assertIn(["tmux", "set-option", "-q", "-t", "cdx_demo", "mouse", "off"], calls)
-        self.assertNotIn(["tmux", "set-option", "-gq", "mouse", "on"], calls)
-        self.assertFalse(any(call[:2] == ["tmux", "bind-key"] for call in calls))
+        self.assertIn(["tmux", "set-option", "-q", "-t", "cdx_demo", "mouse", "on"], calls)
+        self.assertIn(["tmux", "set-option", "-q", "-t", "cdx_demo", "@cdx_scroll_mode", "accelerated-copy-mode"], calls)
+        wheel_up = " ".join(next(call for call in calls if call[:5] == ["tmux", "bind-key", "-T", "root", "WheelUpPane"]))
+        wheel_down = " ".join(next(call for call in calls if call[:5] == ["tmux", "bind-key", "-T", "root", "WheelDownPane"]))
+        self.assertIn(f"-N {EXPECTED_SCROLL_LINES} scroll-up", wheel_up)
+        self.assertIn(f"-N {EXPECTED_SCROLL_LINES} scroll-down", wheel_down)
 
     def test_new_tmux_session_configures_history_before_starting_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
