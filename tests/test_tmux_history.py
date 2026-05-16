@@ -61,6 +61,8 @@ class TmuxHistoryTests(unittest.TestCase):
         wheel_down = " ".join(next(call for call in calls if call[:5] == ["tmux", "bind-key", "-T", "root", "WheelDownPane"]))
         self.assertIn(f"-N {EXPECTED_SCROLL_LINES} scroll-up", wheel_up)
         self.assertIn(f"-N {EXPECTED_SCROLL_LINES} scroll-down", wheel_down)
+        self.assertIn("'copy-mode -e -t ='", wheel_up)
+        self.assertNotIn("copy-mode -e -t = \\", wheel_up)
 
     def test_new_tmux_session_configures_history_before_starting_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

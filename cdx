@@ -452,7 +452,7 @@ def install_tmux_mouse_bindings() -> None:
             "-t",
             "=",
             "#{==:#{@cdx_scroll_mode},accelerated-copy-mode}",
-            f"if-shell -F -t = '#{{pane_in_mode}}' 'send-keys -X -N {scroll_lines} scroll-up' 'copy-mode -e -t = \\; send-keys -X -N {scroll_lines} scroll-up'",
+            f"if-shell -F -t = '#{{pane_in_mode}}' 'send-keys -X -N {scroll_lines} scroll-up' 'copy-mode -e -t ='",
             "if-shell -F -t = '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -e -t ='",
         ],
         [
