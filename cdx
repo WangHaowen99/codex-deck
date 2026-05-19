@@ -1715,10 +1715,6 @@ def ensure_tmux_ready_for_attach(session: dict[str, Any]) -> bool:
         print(dim("检测到 tmux 现场仍是旧 Codex 会话，正在按当前 cdx 绑定重建。"))
         log_event(f"stale tmux session {tmux_name}: actual={actual_codex_id} expected={expected_codex_id}")
         return recreate_tmux_session(session)
-    if not tmux_has_latest_context_preview(session):
-        print(dim("正在刷新 tmux 现场，补写最近对话上下文。"))
-        log_event(f"context preview missing or stale for tmux session {tmux_name}; recreating")
-        return recreate_tmux_session(session)
     return True
 
 

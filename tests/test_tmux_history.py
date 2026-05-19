@@ -200,7 +200,7 @@ class TmuxHistoryTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(events, ["recreate", "touch:True", "attach"])
 
-    def test_enter_session_recreates_idle_tmux_without_current_context_preview(self) -> None:
+    def test_enter_session_keeps_matching_live_tmux_without_context_preview(self) -> None:
         session = {
             "id": "abc123",
             "name": "demo",
@@ -247,7 +247,7 @@ class TmuxHistoryTests(unittest.TestCase):
             cdx.attach_tmux = old_attach
 
         self.assertEqual(rc, 0)
-        self.assertEqual(events, ["recreate", "touch:True", "attach"])
+        self.assertEqual(events, ["touch:True", "attach"])
 
     def test_tmux_has_latest_context_preview_tolerates_wrapped_marker(self) -> None:
         session = {
