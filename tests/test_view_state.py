@@ -29,6 +29,11 @@ def write_events(path: Path, events: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
 
 
+class Completed:
+    def __init__(self, returncode: int = 0):
+        self.returncode = returncode
+
+
 class ViewStateTests(unittest.TestCase):
     def test_unbound_session_is_never_unread(self) -> None:
         session = {
@@ -184,6 +189,146 @@ class ViewStateTests(unittest.TestCase):
             self.assertEqual(metrics["context_tokens"], 129200)
             self.assertEqual(metrics["context_window"], 258400)
             self.assertEqual(metrics["context_percent"], 50)
+
+    def test_transcript_context_preview_uses_latest_visible_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "session.jsonl"
+            events = [
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "# AGENTS.md instructions for /repo"}],
+                    },
+                }
+            ]
+            for idx in range(1, 5):
+                events.extend(
+                    [
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": f"问题 {idx}"}],
+                            },
+                        },
+                        {"type": "event_msg", "payload": {"type": "user_message", "message": f"问题 {idx}"}},
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": f"回答 {idx} " + "很长" * 20}],
+                            },
+                        },
+                        {"type": "event_msg", "payload": {"type": "agent_message", "message": f"回答 {idx} " + "很长" * 20}},
+                    ]
+                )
+            write_events(transcript, events)
+
+            preview = cdx.transcript_context_preview(
+                str(transcript),
+                max_messages=4,
+                width=36,
+                max_chars_per_message=30,
+            )
+
+            self.assertIn("最近 4 条 Codex 对话上下文", preview)
+            self.assertNotIn("# AGENTS.md", preview)
+            self.assertNotIn("问题 1", preview)
+            self.assertIn("用户: 问题 3", preview)
+            self.assertIn("Codex: 回答 4", preview)
+            self.assertEqual(preview.count("用户: 问题 3"), 1)
+            self.assertIn("...", preview)
+
+    def test_cmd_runner_prints_context_preview_before_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cwd = tmp_path / "repo"
+            cwd.mkdir()
+            transcript = tmp_path / "session.jsonl"
+            write_events(
+                transcript,
+                [
+                    {"type": "event_msg", "payload": {"type": "user_message", "message": "恢复前的问题"}},
+                    {"type": "event_msg", "payload": {"type": "agent_message", "message": "恢复前的回答"}},
+                ],
+            )
+            registry_path = tmp_path / "sessions.json"
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "version": cdx.VERSION,
+                        "sessions": [
+                            {
+                                "id": "abc123",
+                                "name": "demo",
+                                "tmux_session": "cdx_abc123",
+                                "codex_session_id": "codex-1",
+                                "last_cwd": str(cwd),
+                                "created_at": "2026-05-12T00:00:00Z",
+                                "updated_at": "2026-05-12T00:00:00Z",
+                                "last_used_at": "2026-05-12T00:00:00Z",
+                                "last_viewed_at": "2026-05-12T00:00:00Z",
+                                "transcript_path": str(transcript),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            calls: list[list[str]] = []
+            old_cwd = os.getcwd()
+            old_registry_path = cdx.REGISTRY_PATH
+            old_run = cdx.subprocess.run
+            cdx.REGISTRY_PATH = registry_path
+            cdx.subprocess.run = lambda args, **_kwargs: calls.append(list(args)) or Completed()
+            try:
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    rc = cdx.cmd_runner(["abc123"])
+            finally:
+                os.chdir(old_cwd)
+                cdx.REGISTRY_PATH = old_registry_path
+                cdx.subprocess.run = old_run
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(calls, [["codex", "resume", "--no-alt-screen", "codex-1"]])
+            text = output.getvalue()
+            self.assertIn("恢复前的问题", text)
+            self.assertLess(text.index("恢复前的问题"), text.index("下面进入 Codex"))
+
+    def test_context_preview_marker_ignores_non_visible_transcript_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "session.jsonl"
+            write_events(
+                transcript,
+                [
+                    {"type": "event_msg", "payload": {"type": "user_message", "message": "用户问题"}},
+                    {"type": "event_msg", "payload": {"type": "agent_message", "message": "回答内容"}},
+                ],
+            )
+            session = {
+                "id": "abc123",
+                "name": "demo",
+                "tmux_session": "cdx_abc123",
+                "codex_session_id": "codex-1",
+                "transcript_path": str(transcript),
+            }
+
+            first = cdx.session_context_preview_marker(session)
+            with transcript.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {}}}) + "\n")
+            after_non_visible = cdx.session_context_preview_marker(session)
+            with transcript.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "event_msg", "payload": {"type": "user_message", "message": "新问题"}}) + "\n")
+            after_visible = cdx.session_context_preview_marker(session)
+
+            self.assertEqual(first, after_non_visible)
+            self.assertNotEqual(first, after_visible)
 
     def test_transcript_metrics_include_agent_action_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

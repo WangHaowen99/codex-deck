@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,8 @@ MAX_NAME_LEN = 60
 RAW_IMPORT_PREVIEW_LIMIT = 30
 TMUX_HISTORY_LIMIT = 200000
 TMUX_SCROLL_LINES = 12
+CONTEXT_PREVIEW_MAX_MESSAGES = 30
+CONTEXT_PREVIEW_MAX_CHARS_PER_MESSAGE = 1600
 CDX_HOOK_STATUS = "cdx session mapping"
 COLOR_ENABLED = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 ASCII_BANNER = [
@@ -403,6 +406,71 @@ def tmux_status(session: dict[str, Any]) -> str:
     return "live" if tmux_exists(session["tmux_session"]) else "exited"
 
 
+def tmux_display_value(target: str, fmt: str) -> str | None:
+    result = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", target, fmt],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        log_event(f"tmux display failed target={target}: {result.stderr.strip()}")
+        return None
+    return result.stdout.strip()
+
+
+def tmux_capture_text(tmux_name: str, *, start: str = "-2000") -> str | None:
+    result = subprocess.run(
+        ["tmux", "capture-pane", "-p", "-t", tmux_name, "-S", start, "-E", "-"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        log_event(f"tmux capture failed session={tmux_name}: {result.stderr.strip()}")
+        return None
+    return result.stdout
+
+
+def codex_session_id_from_process_output(output: str) -> str | None:
+    found: str | None = None
+    for line in output.splitlines():
+        if "codex" not in line or "resume" not in line:
+            continue
+        matches = CODEX_ID_PATTERN.findall(line)
+        if matches:
+            found = matches[-1]
+    return found
+
+
+def live_tmux_codex_session_id(tmux_name: str) -> str | None:
+    pane_pid = tmux_display_value(tmux_name, "#{pane_pid}")
+    if not pane_pid or not pane_pid.isdigit():
+        return None
+    sid_result = subprocess.run(
+        ["ps", "-o", "sid=", "-p", pane_pid],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if sid_result.returncode != 0:
+        log_event(f"ps sid failed pane_pid={pane_pid}: {sid_result.stderr.strip()}")
+        return None
+    sid = sid_result.stdout.strip()
+    if not sid:
+        return None
+    commands_result = subprocess.run(
+        ["ps", "-o", "command=", "-g", sid],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if commands_result.returncode != 0:
+        log_event(f"ps process group failed sid={sid}: {commands_result.stderr.strip()}")
+        return None
+    return codex_session_id_from_process_output(commands_result.stdout)
+
+
 def configure_tmux_session(tmux_name: str) -> None:
     if shutil.which("tmux") is None:
         return
@@ -645,6 +713,15 @@ def transcript_task_window(path: str | None, *, max_lines: int = 1200) -> tuple[
     return latest_started, latest_complete
 
 
+def codex_session_is_running(codex_id: str | None) -> bool:
+    if not codex_id:
+        return False
+    started_at, completed_at = transcript_task_window(find_codex_transcript_path(codex_id))
+    started_dt = parse_iso(started_at)
+    completed_dt = parse_iso(completed_at)
+    return bool(started_dt and (not completed_dt or started_dt > completed_dt))
+
+
 def transcript_is_subagent(path: str | None, *, max_lines: int = 50) -> bool:
     if not path:
         return False
@@ -761,6 +838,143 @@ def extract_message_content_text(content: Any) -> str:
             if isinstance(text, str):
                 pieces.append(text)
     return " ".join(pieces)
+
+
+def transcript_visible_message(item: dict[str, Any]) -> tuple[str, str] | None:
+    payload = item.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    text = ""
+    role = ""
+    if item.get("type") == "event_msg" and payload.get("type") in {"user_message", "agent_message"}:
+        message = payload.get("message")
+        text = message if isinstance(message, str) else ""
+        role = "用户" if payload.get("type") == "user_message" else "Codex"
+    elif item.get("type") == "response_item" and payload.get("type") == "message" and payload.get("role") in {"user", "assistant"}:
+        text = extract_message_content_text(payload.get("content"))
+        role = "用户" if payload.get("role") == "user" else "Codex"
+    visible = user_visible_conversation_text(text)
+    if not visible:
+        return None
+    return role, visible
+
+
+def transcript_visible_messages(path: str | None) -> list[tuple[str, str]]:
+    if not path:
+        return []
+    transcript = Path(path)
+    if not transcript.exists():
+        return []
+    messages: list[tuple[str, str]] = []
+    previous: tuple[str, str] | None = None
+    try:
+        with transcript.open("r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                message = transcript_visible_message(item)
+                if not message or message == previous:
+                    continue
+                messages.append(message)
+                previous = message
+    except OSError:
+        return []
+    return messages
+
+
+def truncate_preview_message(text: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return text[:max_chars]
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def wrap_display_line(text: str, width: int) -> list[str]:
+    width = max(12, width)
+    lines: list[str] = []
+    current: list[str] = []
+    current_width = 0
+    for ch in text:
+        ch_width = 2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
+        if current and current_width + ch_width > width:
+            lines.append("".join(current).rstrip())
+            current = []
+            current_width = 0
+        current.append(ch)
+        current_width += ch_width
+    if current:
+        lines.append("".join(current).rstrip())
+    return lines or [""]
+
+
+def transcript_context_preview(
+    path: str | None,
+    *,
+    max_messages: int = CONTEXT_PREVIEW_MAX_MESSAGES,
+    width: int | None = None,
+    max_chars_per_message: int = CONTEXT_PREVIEW_MAX_CHARS_PER_MESSAGE,
+    marker: str | None = None,
+) -> str:
+    messages = transcript_visible_messages(path)
+    if not messages or max_messages <= 0:
+        return ""
+    selected = messages[-max_messages:]
+    preview_width = max(36, min(width or ui_width(), 104))
+    body_width = max(24, preview_width - 2)
+    lines: list[str] = []
+    if marker:
+        lines.append(marker)
+    lines.append(f"[cdx] 最近 {len(selected)} 条 Codex 对话上下文")
+    lines.append("[cdx] 来自本地 transcript，手机切回时可向上滚动查看。")
+    lines.append("-" * body_width)
+    for role, text in selected:
+        normalized = normalize_preview_text(text)
+        truncated = truncate_preview_message(normalized, max_chars_per_message)
+        prefix = f"{role}: "
+        wrapped = wrap_display_line(prefix + truncated, body_width)
+        lines.extend(wrapped)
+        lines.append("")
+    if lines and lines[-1] == "":
+        lines.pop()
+    lines.append("-" * body_width)
+    lines.append("[cdx] 上下文预览结束，下面进入 Codex。")
+    return "\n".join(lines)
+
+
+def transcript_visible_fingerprint(path: str | None) -> str | None:
+    messages = transcript_visible_messages(path)
+    if not messages:
+        return None
+    role, text = messages[-1]
+    digest = hashlib.sha256(f"{len(messages)}\0{role}\0{text}".encode("utf-8")).hexdigest()[:16]
+    return f"visible={len(messages)}:{digest}"
+
+
+def session_context_preview_marker(session: dict[str, Any]) -> str | None:
+    if not session.get("codex_session_id"):
+        return None
+    fingerprint = transcript_visible_fingerprint(resolve_session_transcript_path(session))
+    if not fingerprint:
+        return None
+    return f"[cdx-context-preview id={session.get('id', '')} codex={session.get('codex_session_id', '')} {fingerprint}]"
+
+
+def print_session_context_preview(session: dict[str, Any]) -> None:
+    preview = transcript_context_preview(
+        resolve_session_transcript_path(session),
+        marker=session_context_preview_marker(session),
+    )
+    if preview:
+        print()
+        print(preview, flush=True)
+        print(flush=True)
 
 
 def empty_transcript_metrics() -> dict[str, int | None]:
@@ -1454,6 +1668,60 @@ def create_tmux_if_needed(session: dict[str, Any]) -> bool:
         return True
 
 
+def tmux_has_latest_context_preview(session: dict[str, Any]) -> bool:
+    marker = session_context_preview_marker(session)
+    if not marker:
+        return True
+    text = tmux_capture_text(session["tmux_session"], start="-")
+    if text is None:
+        return True
+    if marker in text:
+        return True
+    compact_marker = re.sub(r"\s+", "", marker)
+    compact_text = re.sub(r"\s+", "", text)
+    return compact_marker in compact_text
+
+
+def recreate_tmux_session(session: dict[str, Any]) -> bool:
+    tmux_name = session["tmux_session"]
+    result = subprocess.run(
+        ["tmux", "kill-session", "-t", tmux_name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0 and tmux_exists(tmux_name):
+        print(f"重建 tmux 失败: {result.stderr.strip()}")
+        return False
+    log_event(f"recreating tmux session {tmux_name} for cdx id={session['id']}")
+    return create_tmux_if_needed(session)
+
+
+def ensure_tmux_ready_for_attach(session: dict[str, Any]) -> bool:
+    expected_codex_id = session.get("codex_session_id")
+    if not expected_codex_id:
+        return True
+    activity = session_activity(session)
+    if activity["state"] == "running":
+        return True
+    tmux_name = session["tmux_session"]
+    actual_codex_id = live_tmux_codex_session_id(tmux_name)
+    if actual_codex_id and actual_codex_id != expected_codex_id:
+        if codex_session_is_running(actual_codex_id):
+            log_event(
+                f"kept stale tmux session {tmux_name}; actual codex {actual_codex_id} is still running, expected {expected_codex_id}"
+            )
+            return True
+        print(dim("检测到 tmux 现场仍是旧 Codex 会话，正在按当前 cdx 绑定重建。"))
+        log_event(f"stale tmux session {tmux_name}: actual={actual_codex_id} expected={expected_codex_id}")
+        return recreate_tmux_session(session)
+    if not tmux_has_latest_context_preview(session):
+        print(dim("正在刷新 tmux 现场，补写最近对话上下文。"))
+        log_event(f"context preview missing or stale for tmux session {tmux_name}; recreating")
+        return recreate_tmux_session(session)
+    return True
+
+
 def attach_tmux(session: dict[str, Any]) -> int:
     tmux_name = session["tmux_session"]
     configure_tmux_session(tmux_name)
@@ -1577,6 +1845,8 @@ def mark_session_viewed(session_id: str) -> dict[str, Any] | None:
 
 def enter_session(session: dict[str, Any], *, unbound_mode: str = "prompt") -> int:
     if tmux_exists(session["tmux_session"]):
+        if not ensure_tmux_ready_for_attach(session):
+            return 1
         touch_last_used(session["id"], mark_viewed=True)
         return attach_tmux(session)
     if not session.get("codex_session_id"):
@@ -2587,6 +2857,7 @@ def cmd_runner(args: list[str]) -> int:
         env["CDX_NAME"] = session["name"]
         env["CDX_REGISTRY"] = str(REGISTRY_PATH)
         args = codex_args_for_session(session)
+        print_session_context_preview(session)
         log_event(f"runner starting {' '.join(args)} for cdx id={session['id']}")
         started_at = time.time()
         if not session.get("codex_session_id"):
