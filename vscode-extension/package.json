@@ -19,6 +19,8 @@
     "onCommand:codexDeck.refresh",
     "onCommand:codexDeck.newSession",
     "onCommand:codexDeck.openSession",
+    "onCommand:codexDeck.closeSession",
+    "onCommand:codexDeck.openHistorySession",
     "onCommand:codexDeck.deleteSession",
     "onCommand:codexDeck.renameSession",
     "onCommand:codexDeck.copyUuid",
@@ -82,6 +84,16 @@
         "icon": "$(edit)"
       },
       {
+        "command": "codexDeck.closeSession",
+        "title": "Close Session",
+        "icon": "$(close)"
+      },
+      {
+        "command": "codexDeck.openHistorySession",
+        "title": "Open History Session",
+        "icon": "$(history)"
+      },
+      {
         "command": "codexDeck.deleteSession",
         "title": "Delete Session",
         "icon": "$(trash)"
@@ -122,6 +134,11 @@
       ],
       "view/item/context": [
         {
+          "command": "codexDeck.openHistorySession",
+          "when": "view == codexDeck.sessions && !viewItem",
+          "group": "navigation@1"
+        },
+        {
           "command": "codexDeck.openSession",
           "when": "view == codexDeck.sessions && viewItem == cdxSession",
           "group": "inline@1"
@@ -150,6 +167,11 @@
           "command": "codexDeck.showCompactionDetails",
           "when": "view == codexDeck.sessions && viewItem == cdxSession",
           "group": "navigation@5"
+        },
+        {
+          "command": "codexDeck.closeSession",
+          "when": "view == codexDeck.sessions && viewItem == cdxSession",
+          "group": "navigation@8"
         },
         {
           "command": "codexDeck.deleteSession",

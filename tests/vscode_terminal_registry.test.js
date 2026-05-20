@@ -35,3 +35,13 @@ test('removes a terminal when VS Code reports it closed', () => {
   assert.equal(registry.get('session-1'), undefined)
   assert.equal(registry.get('session-2'), second)
 })
+
+test('removes a terminal by session key', () => {
+  const registry = new TerminalRegistry()
+  const terminal = { show () {} }
+
+  registry.set('session-1', terminal)
+  registry.deleteKey('session-1')
+
+  assert.equal(registry.get('session-1'), undefined)
+})

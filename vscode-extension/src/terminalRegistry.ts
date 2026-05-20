@@ -21,6 +21,10 @@ export class TerminalRegistry<Terminal extends ReusableTerminal> {
     this.terminals.set(key, terminal)
   }
 
+  deleteKey (key: string): void {
+    this.terminals.delete(key)
+  }
+
   deleteTerminal (terminal: Terminal): void {
     for (const [key, cached] of this.terminals.entries()) {
       if (cached === terminal) {

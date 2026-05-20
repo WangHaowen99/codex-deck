@@ -2,6 +2,12 @@ import * as vscode from 'vscode'
 import { execFile } from 'child_process'
 import * as fs from 'fs/promises'
 import * as os from 'os'
+import {
+  cdxCloseArgs,
+  cdxHistoryArgs,
+  cdxReopenArgs,
+  historyPickLabel
+} from './cdxCommands'
 import { TerminalRegistry } from './terminalRegistry'
 import {
   renderCompactionDetails,
@@ -27,6 +33,8 @@ interface CdxSession {
   tmux_session: string
   codex_session_id?: string | null
   bound: boolean
+  closed?: boolean
+  closed_at?: string | null
   unread?: boolean
   activity_state?: string | null
   activity_started_at?: string | null
@@ -111,6 +119,33 @@ class CdxClient {
     if (!data.ok) {
       throw new Error(data.error || 'cdx delete failed')
     }
+  }
+
+  async close (name: string): Promise<CdxSession> {
+    const stdout = await this.run(cdxCloseArgs(name))
+    const data = parseJson<CdxSessionResult>(stdout)
+    if (!data.ok || !data.session) {
+      throw new Error(data.error || 'cdx close failed')
+    }
+    return data.session
+  }
+
+  async history (): Promise<CdxSession[]> {
+    const stdout = await this.run(cdxHistoryArgs())
+    const data = parseJson<CdxListResult>(stdout)
+    if (!data.ok) {
+      throw new Error(data.error || 'cdx history failed')
+    }
+    return hydrateTranscriptMetrics(data.sessions || [], path => fs.readFile(path, 'utf8'))
+  }
+
+  async reopen (name: string): Promise<CdxSession> {
+    const stdout = await this.run(cdxReopenArgs(name))
+    const data = parseJson<CdxSessionResult>(stdout)
+    if (!data.ok || !data.session) {
+      throw new Error(data.error || 'cdx reopen failed')
+    }
+    return data.session
   }
 
   async markViewed (name: string): Promise<CdxSession> {
@@ -202,6 +237,24 @@ class SessionsProvider implements vscode.TreeDataProvider<SessionItem> {
     )
     return picked?.session
   }
+
+  async pickHistorySession (placeholder: string): Promise<CdxSession | undefined> {
+    const history = await this.client.history()
+    if (!history.length) {
+      vscode.window.showInformationMessage('没有已关闭的 Codex Deck 历史会话。')
+      return undefined
+    }
+    const picked = await vscode.window.showQuickPick(
+      history.map(session => ({
+        label: historyPickLabel(session),
+        description: sessionDescription(session) || undefined,
+        detail: session.last_cwd || undefined,
+        session
+      })),
+      { placeHolder: placeholder }
+    )
+    return picked?.session
+  }
 }
 
 export function activate (context: vscode.ExtensionContext): void {
@@ -218,6 +271,8 @@ export function activate (context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codexDeck.newSession', async () => newSession(provider, terminals)),
     vscode.commands.registerCommand('codexDeck.openSession', async item => openSession(provider, terminals, item)),
     vscode.commands.registerCommand('codexDeck.renameSession', async item => renameSession(provider, item)),
+    vscode.commands.registerCommand('codexDeck.closeSession', async item => closeSession(provider, terminals, item)),
+    vscode.commands.registerCommand('codexDeck.openHistorySession', async () => openHistorySession(provider, terminals)),
     vscode.commands.registerCommand('codexDeck.deleteSession', async item => deleteSession(provider, item)),
     vscode.commands.registerCommand('codexDeck.copyUuid', async item => copyUuid(provider, item)),
     vscode.commands.registerCommand('codexDeck.showFailureDetails', async item => showFailureDetails(provider, item)),
@@ -311,6 +366,41 @@ async function deleteSession (provider: SessionsProvider, item: unknown): Promis
     await provider.client.delete(session.name)
     await provider.refresh()
   })
+}
+
+async function closeSession (provider: SessionsProvider, terminals: TerminalRegistry<vscode.Terminal>, item: unknown): Promise<void> {
+  const session = await sessionFrom(provider, item, 'Close which Codex Deck session?')
+  if (!session) {
+    return
+  }
+  const confirmed = await vscode.window.showWarningMessage(
+    `Close Codex Deck session "${session.name}"? This hides it from the sidebar, keeps it in history, and closes the tmux session if it is running.`,
+    { modal: true },
+    'Close'
+  )
+  if (confirmed !== 'Close') {
+    return
+  }
+  await runAction('Close Codex Deck session', async () => {
+    await provider.client.close(session.name)
+    terminals.deleteKey(sessionTerminalKey(session))
+    await provider.refresh()
+  })
+}
+
+async function openHistorySession (provider: SessionsProvider, terminals: TerminalRegistry<vscode.Terminal>): Promise<void> {
+  const session = await provider.pickHistorySession('Open which closed Codex Deck session?')
+  if (!session) {
+    return
+  }
+  const reopened = await runAction('Open Codex Deck history session', async () => {
+    const restored = await provider.client.reopen(session.name)
+    await provider.refresh()
+    return restored
+  })
+  if (reopened) {
+    openTerminalFor(reopened, provider.client.executable, terminals)
+  }
 }
 
 async function copyUuid (provider: SessionsProvider, item: unknown): Promise<void> {
