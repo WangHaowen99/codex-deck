@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.15 - Latest Conversation First
+
+- Download: [codex-deck-vscode-0.1.15.vsix](releases/codex-deck-vscode-0.1.15.vsix)
+- Update: the VS Code sidebar now sorts sessions by latest conversation activity, pinning the most recently updated cdx conversation to the top; when conversation timestamps are unavailable, it falls back to last-used time.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.15.vsix
+```
+
 ### v0.1.14 - Fork Codex Sessions
 
 - Download: [codex-deck-vscode-0.1.14.vsix](releases/codex-deck-vscode-0.1.14.vsix)

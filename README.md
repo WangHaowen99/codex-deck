@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.15 - 最新对话置顶
+
+- 下载：[codex-deck-vscode-0.1.15.vsix](releases/codex-deck-vscode-0.1.15.vsix)
+- 更新：VS Code 侧边栏按最近对话更新时间排序，最新有对话活动的 cdx 会话会自动置顶；无对话更新时间时回退到最近使用时间。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.15.vsix
+```
+
 ### v0.1.14 - Fork Codex 会话
 
 - 下载：[codex-deck-vscode-0.1.14.vsix](releases/codex-deck-vscode-0.1.14.vsix)

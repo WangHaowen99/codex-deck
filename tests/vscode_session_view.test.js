@@ -110,21 +110,40 @@ test('tooltip metric lines include action analysis details', () => {
   ])
 })
 
-test('sidebar order is stable by creation time, not last access time', () => {
+test('sidebar puts the latest conversation first', () => {
   const sessions = [
     {
       id: 'old',
       name: 'old session',
       created_at: '2026-05-10T00:00:00Z',
-      last_used_at: '2026-05-11T12:00:00Z'
+      conversation_updated_at: '2026-05-11T12:00:00Z'
     },
     {
       id: 'new',
       name: 'new session',
       created_at: '2026-05-11T00:00:00Z',
+      conversation_updated_at: '2026-05-11T01:00:00Z'
+    }
+  ]
+
+  assert.deepEqual(sortSessionsForSidebar(sessions).map(session => session.id), ['old', 'new'])
+})
+
+test('sidebar falls back to last used time for latest conversation ordering', () => {
+  const sessions = [
+    {
+      id: 'older-created-but-used-latest',
+      name: 'older created',
+      created_at: '2026-05-10T00:00:00Z',
+      last_used_at: '2026-05-11T12:00:00Z'
+    },
+    {
+      id: 'newer-created',
+      name: 'newer created',
+      created_at: '2026-05-11T00:00:00Z',
       last_used_at: '2026-05-11T01:00:00Z'
     }
   ]
 
-  assert.deepEqual(sortSessionsForSidebar(sessions).map(session => session.id), ['new', 'old'])
+  assert.deepEqual(sortSessionsForSidebar(sessions).map(session => session.id), ['older-created-but-used-latest', 'newer-created'])
 })

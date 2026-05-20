@@ -27,6 +27,9 @@ export interface SessionViewState {
 export interface SessionSortState {
   id?: string | null
   name?: string | null
+  conversation_updated_at?: string | null
+  last_used_at?: string | null
+  updated_at?: string | null
   created_at?: string | null
 }
 
@@ -67,9 +70,9 @@ export function sessionStatusIcon (session: SessionViewState): SessionStatusIcon
 
 export function sortSessionsForSidebar<T extends SessionSortState> (sessions: T[]): T[] {
   return [...sessions].sort((left, right) => {
-    const byCreated = timestamp(right.created_at) - timestamp(left.created_at)
-    if (byCreated !== 0) {
-      return byCreated
+    const byLatestConversation = latestSessionTimestamp(right) - latestSessionTimestamp(left)
+    if (byLatestConversation !== 0) {
+      return byLatestConversation
     }
     const byName = String(left.name || '').localeCompare(String(right.name || ''))
     if (byName !== 0) {
@@ -77,6 +80,13 @@ export function sortSessionsForSidebar<T extends SessionSortState> (sessions: T[
     }
     return String(left.id || '').localeCompare(String(right.id || ''))
   })
+}
+
+function latestSessionTimestamp (session: SessionSortState): number {
+  return timestamp(session.conversation_updated_at) ||
+    timestamp(session.last_used_at) ||
+    timestamp(session.updated_at) ||
+    timestamp(session.created_at)
 }
 
 export function sessionDescription (session: SessionViewState, nowMs = Date.now()): string {
