@@ -66,6 +66,16 @@ cdx enter 写论文
 
 ## 📦 版本发布
 
+### v0.1.14 - Fork Codex 会话
+
+- 下载：[codex-deck-vscode-0.1.14.vsix](releases/codex-deck-vscode-0.1.14.vsix)
+- 更新：`cdx` 新增 `fork` 命令；VS Code 侧边栏右键新增 “Fork Session”，可基于已有 Codex 会话创建新的 cdx 会话并打开新终端。
+- 安装：
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.14.vsix
+```
+
 ### v0.1.13 - 调用详情与压缩详情
 
 - 下载：[codex-deck-vscode-0.1.13.vsix](releases/codex-deck-vscode-0.1.13.vsix)

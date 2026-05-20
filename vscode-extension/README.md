@@ -6,6 +6,7 @@ It does not reimplement Codex Deck. It calls the remote/workspace `cdx` command:
 
 - `cdx list --json`
 - `cdx new --cwd <path> --no-enter --json <cdx_name>`
+- `cdx fork --no-enter --json <source_cdx_name> <new_cdx_name>`
 - `cdx rename --json <old> <new>`
 - `cdx delete --yes --json <cdx_name>`
 - `cdx enter <cdx_name>`

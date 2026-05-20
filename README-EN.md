@@ -62,6 +62,16 @@ cdx enter paper-writing
 
 ## Releases
 
+### v0.1.14 - Fork Codex Sessions
+
+- Download: [codex-deck-vscode-0.1.14.vsix](releases/codex-deck-vscode-0.1.14.vsix)
+- Update: `cdx` adds the `fork` command; the VS Code sidebar context menu adds "Fork Session" to create a new cdx session from an existing Codex session and open it in a new terminal.
+- Install:
+
+```bash
+code --install-extension releases/codex-deck-vscode-0.1.14.vsix
+```
+
 ### v0.1.13 - Call Details and Compaction Details
 
 - Download: [codex-deck-vscode-0.1.13.vsix](releases/codex-deck-vscode-0.1.13.vsix)
