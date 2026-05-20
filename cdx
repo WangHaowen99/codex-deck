@@ -1278,6 +1278,9 @@ def session_json(session: dict[str, Any], *, include_status: bool = True) -> dic
         "bound": bool(session.get("codex_session_id")),
         "closed": session_is_closed(session),
         "closed_at": session.get("closed_at"),
+        "fork_from_codex_session_id": session.get("fork_from_codex_session_id"),
+        "fork_from_cdx_id": session.get("fork_from_cdx_id"),
+        "fork_pending": bool(session.get("fork_from_codex_session_id") and not session.get("codex_session_id")),
         "unread": session_has_unread_result(session),
         "activity_state": activity["state"],
         "activity_started_at": activity["started_at"],
@@ -1666,7 +1669,14 @@ def ensure_initialized() -> bool:
     return cmd_init(auto=True) == 0
 
 
-def create_record(name: str, cwd: str, codex_session_id: str | None = None, transcript_path: str | None = None) -> dict[str, Any]:
+def create_record(
+    name: str,
+    cwd: str,
+    codex_session_id: str | None = None,
+    transcript_path: str | None = None,
+    fork_from_codex_session_id: str | None = None,
+    fork_from_cdx_id: str | None = None,
+) -> dict[str, Any]:
     with registry_lock():
         registry = load_registry()
         if find_session_by_name(registry, name):
@@ -1685,6 +1695,10 @@ def create_record(name: str, cwd: str, codex_session_id: str | None = None, tran
             "last_viewed_at": later_time(created, path_mtime_iso(transcript_path)),
             "transcript_path": transcript_path,
         }
+        if fork_from_codex_session_id:
+            session["fork_from_codex_session_id"] = fork_from_codex_session_id
+        if fork_from_cdx_id:
+            session["fork_from_cdx_id"] = fork_from_cdx_id
         registry["sessions"].append(session)
         save_registry(registry)
         log_event(f"created cdx session id={sid} name={name!r}")
@@ -1816,7 +1830,7 @@ def bind_cdx_session_to_codex_id(session_id: str, codex_id: str, *, source: str)
             log_event(f"{source} cdx session not found cdx_id={session_id} codex_id={codex_id}")
             return False
         existing = session.get("codex_session_id")
-        changed = existing != codex_id
+        changed = existing != codex_id or bool(session.get("fork_from_codex_session_id") or session.get("fork_from_cdx_id"))
         if changed or (transcript_path and session.get("transcript_path") != transcript_path):
             session["transcript_path"] = transcript_path
             changed = True
@@ -1824,6 +1838,8 @@ def bind_cdx_session_to_codex_id(session_id: str, codex_id: str, *, source: str)
             return True
         ts = now_utc()
         session["codex_session_id"] = codex_id
+        session.pop("fork_from_codex_session_id", None)
+        session.pop("fork_from_cdx_id", None)
         session["last_used_at"] = ts
         session["last_viewed_at"] = later_time(ts, session_conversation_updated_at(session))
         session["updated_at"] = ts
@@ -2118,6 +2134,63 @@ def cmd_new(args: list[str]) -> int:
         return 1
     if json_mode:
         emit_json({"ok": True, "existing": False, "session": session_json(session)})
+    if no_enter:
+        return 0
+    return enter_session(session, unbound_mode="new")
+
+
+def cmd_fork(args: list[str]) -> int:
+    args = list(args)
+    json_mode = take_flag(args, "--json")
+    no_enter = take_flag(args, "--no-enter") or json_mode
+    try:
+        require_tool("tmux")
+        require_tool("codex")
+    except CdxError as exc:
+        print_error(f"错误: {exc}", json_mode=json_mode)
+        return 1
+    if len(args) >= 2:
+        source_name = args[0]
+        new_name = " ".join(args[1:]).strip()
+        registry = load_registry()
+        source = find_session_by_name(registry, source_name)
+        if not source:
+            print_error(f"未找到会话: {source_name}", json_mode=json_mode)
+            return 1
+    elif not args and not json_mode:
+        source = choose_cdx_session("基于哪个 cdx 会话 fork")
+        if not source:
+            return 1
+        new_name = prompt("新的 cdx_name: ")
+    else:
+        print_error("用法: cdx fork [--json] [--no-enter] SOURCE_CDX_NAME NEW_CDX_NAME", json_mode=json_mode)
+        return 1
+    if session_is_closed(source):
+        print_error(f"会话“{source.get('name', '')}”已关闭，请先 reopen。", json_mode=json_mode)
+        return 1
+    source_codex_id = source.get("codex_session_id")
+    if not source_codex_id:
+        print_error("源会话还没有绑定 Codex UUID，不能 fork。", json_mode=json_mode)
+        return 1
+    try:
+        new_name = validate_name(new_name)
+    except CdxError as exc:
+        print_error(f"错误: {exc}", json_mode=json_mode)
+        return 1
+    cwd = source.get("last_cwd") if source.get("last_cwd") and Path(source.get("last_cwd", "")).is_dir() else str(HOME)
+    try:
+        session = create_record(
+            new_name,
+            cwd,
+            fork_from_codex_session_id=source_codex_id,
+            fork_from_cdx_id=source.get("id"),
+        )
+    except CdxError as exc:
+        print_error(f"错误: {exc}", json_mode=json_mode)
+        return 1
+    log_event(f"created fork cdx session id={session['id']} from cdx id={source.get('id')} codex id={source_codex_id}")
+    if json_mode:
+        emit_json({"ok": True, "session": session_json(session)})
     if no_enter:
         return 0
     return enter_session(session, unbound_mode="new")
@@ -3079,6 +3152,8 @@ def cmd_runner(args: list[str]) -> int:
 def codex_args_for_session(session: dict[str, Any]) -> list[str]:
     if session.get("codex_session_id"):
         return ["codex", "resume", "--no-alt-screen", session["codex_session_id"]]
+    if session.get("fork_from_codex_session_id"):
+        return ["codex", "fork", "--no-alt-screen", session["fork_from_codex_session_id"]]
     return ["codex", "--no-alt-screen"]
 
 
@@ -3176,6 +3251,7 @@ def usage() -> str:
   cdx list --json           输出机器可读会话列表
   cdx new [cdx_name]        新建会话；同名则进入
   cdx new --cwd PATH --no-enter --json [cdx_name]
+  cdx fork [--no-enter] [--json] SOURCE NEW
   cdx enter [cdx_name]      进入会话
   cdx enter --new-if-unbound [cdx_name]
   cdx enter --print-command [cdx_name]
@@ -3222,6 +3298,7 @@ def dispatch(argv: list[str]) -> int:
         "new": cmd_new,
         "add": cmd_new,
         "create": cmd_new,
+        "fork": cmd_fork,
         "enter": cmd_enter,
         "open": cmd_enter,
         "close": cmd_close,

@@ -5,6 +5,7 @@ const test = require('node:test')
 
 const {
   cdxCloseArgs,
+  cdxForkArgs,
   cdxHistoryArgs,
   cdxReopenArgs,
   historyPickLabel
@@ -12,6 +13,7 @@ const {
 
 test('builds cdx lifecycle command arguments', () => {
   assert.deepEqual(cdxCloseArgs('demo session'), ['close', '--yes', '--json', 'demo session'])
+  assert.deepEqual(cdxForkArgs('source session', 'forked session'), ['fork', '--no-enter', '--json', 'source session', 'forked session'])
   assert.deepEqual(cdxHistoryArgs(), ['history', '--json'])
   assert.deepEqual(cdxReopenArgs('demo session'), ['reopen', '--json', 'demo session'])
 })
@@ -30,7 +32,12 @@ test('package contributes close and open-history context commands', () => {
   const contextItems = manifest.contributes.menus['view/item/context']
 
   assert.ok(commands.has('codexDeck.closeSession'))
+  assert.ok(commands.has('codexDeck.forkSession'))
   assert.ok(commands.has('codexDeck.openHistorySession'))
+  assert.ok(contextItems.some(item =>
+    item.command === 'codexDeck.forkSession' &&
+    item.when === 'view == codexDeck.sessions && viewItem == cdxSession'
+  ))
   assert.ok(contextItems.some(item =>
     item.command === 'codexDeck.closeSession' &&
     item.when === 'view == codexDeck.sessions && viewItem == cdxSession'

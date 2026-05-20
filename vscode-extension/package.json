@@ -19,6 +19,7 @@
     "onCommand:codexDeck.refresh",
     "onCommand:codexDeck.newSession",
     "onCommand:codexDeck.openSession",
+    "onCommand:codexDeck.forkSession",
     "onCommand:codexDeck.closeSession",
     "onCommand:codexDeck.openHistorySession",
     "onCommand:codexDeck.deleteSession",
@@ -84,6 +85,11 @@
         "icon": "$(edit)"
       },
       {
+        "command": "codexDeck.forkSession",
+        "title": "Fork Session",
+        "icon": "$(repo-forked)"
+      },
+      {
         "command": "codexDeck.closeSession",
         "title": "Close Session",
         "icon": "$(close)"
@@ -144,29 +150,34 @@
           "group": "inline@1"
         },
         {
-          "command": "codexDeck.renameSession",
+          "command": "codexDeck.forkSession",
           "when": "view == codexDeck.sessions && viewItem == cdxSession",
           "group": "navigation@1"
         },
         {
-          "command": "codexDeck.copyUuid",
+          "command": "codexDeck.renameSession",
           "when": "view == codexDeck.sessions && viewItem == cdxSession",
           "group": "navigation@2"
         },
         {
-          "command": "codexDeck.showFailureDetails",
+          "command": "codexDeck.copyUuid",
           "when": "view == codexDeck.sessions && viewItem == cdxSession",
           "group": "navigation@3"
         },
         {
-          "command": "codexDeck.showToolDetails",
+          "command": "codexDeck.showFailureDetails",
           "when": "view == codexDeck.sessions && viewItem == cdxSession",
           "group": "navigation@4"
         },
         {
-          "command": "codexDeck.showCompactionDetails",
+          "command": "codexDeck.showToolDetails",
           "when": "view == codexDeck.sessions && viewItem == cdxSession",
           "group": "navigation@5"
+        },
+        {
+          "command": "codexDeck.showCompactionDetails",
+          "when": "view == codexDeck.sessions && viewItem == cdxSession",
+          "group": "navigation@6"
         },
         {
           "command": "codexDeck.closeSession",

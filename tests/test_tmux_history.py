@@ -136,6 +136,10 @@ class TmuxHistoryTests(unittest.TestCase):
             cdx.codex_args_for_session({"codex_session_id": "codex-1"}),
             ["codex", "resume", "--no-alt-screen", "codex-1"],
         )
+        self.assertEqual(
+            cdx.codex_args_for_session({"fork_from_codex_session_id": "codex-source"}),
+            ["codex", "fork", "--no-alt-screen", "codex-source"],
+        )
 
     def test_codex_session_id_from_process_output_detects_resume_target(self) -> None:
         output = "\n".join(

@@ -4,6 +4,7 @@ import * as fs from 'fs/promises'
 import * as os from 'os'
 import {
   cdxCloseArgs,
+  cdxForkArgs,
   cdxHistoryArgs,
   cdxReopenArgs,
   historyPickLabel
@@ -126,6 +127,15 @@ class CdxClient {
     const data = parseJson<CdxSessionResult>(stdout)
     if (!data.ok || !data.session) {
       throw new Error(data.error || 'cdx close failed')
+    }
+    return data.session
+  }
+
+  async fork (sourceName: string, newName: string): Promise<CdxSession> {
+    const stdout = await this.run(cdxForkArgs(sourceName, newName))
+    const data = parseJson<CdxSessionResult>(stdout)
+    if (!data.ok || !data.session) {
+      throw new Error(data.error || 'cdx fork failed')
     }
     return data.session
   }
@@ -270,6 +280,7 @@ export function activate (context: vscode.ExtensionContext): void {
     vscode.window.onDidCloseTerminal(terminal => terminals.deleteTerminal(terminal)),
     vscode.commands.registerCommand('codexDeck.newSession', async () => newSession(provider, terminals)),
     vscode.commands.registerCommand('codexDeck.openSession', async item => openSession(provider, terminals, item)),
+    vscode.commands.registerCommand('codexDeck.forkSession', async item => forkSession(provider, terminals, item)),
     vscode.commands.registerCommand('codexDeck.renameSession', async item => renameSession(provider, item)),
     vscode.commands.registerCommand('codexDeck.closeSession', async item => closeSession(provider, terminals, item)),
     vscode.commands.registerCommand('codexDeck.openHistorySession', async () => openHistorySession(provider, terminals)),
@@ -347,6 +358,34 @@ async function renameSession (provider: SessionsProvider, item: unknown): Promis
     await provider.client.rename(session.name, newName.trim())
     await provider.refresh()
   })
+}
+
+async function forkSession (provider: SessionsProvider, terminals: TerminalRegistry<vscode.Terminal>, item: unknown): Promise<void> {
+  const session = await sessionFrom(provider, item, 'Fork which Codex Deck session?')
+  if (!session) {
+    return
+  }
+  if (!session.codex_session_id) {
+    vscode.window.showInformationMessage(`"${session.name}" is not bound to a Codex session yet.`)
+    return
+  }
+  const newName = await vscode.window.showInputBox({
+    prompt: 'New fork cdx_name',
+    value: `${session.name} fork`,
+    ignoreFocusOut: true,
+    validateInput: value => value.trim() ? undefined : 'cdx_name is required'
+  })
+  if (!newName) {
+    return
+  }
+  const forked = await runAction('Fork Codex Deck session', async () => {
+    const created = await provider.client.fork(session.name, newName.trim())
+    await provider.refresh()
+    return created
+  })
+  if (forked) {
+    openTerminalFor(forked, provider.client.executable, terminals, { newIfUnbound: true })
+  }
 }
 
 async function deleteSession (provider: SessionsProvider, item: unknown): Promise<void> {

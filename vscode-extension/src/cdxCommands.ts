@@ -7,6 +7,10 @@ export function cdxCloseArgs (name: string): string[] {
   return ['close', '--yes', '--json', name]
 }
 
+export function cdxForkArgs (sourceName: string, newName: string): string[] {
+  return ['fork', '--no-enter', '--json', sourceName, newName]
+}
+
 export function cdxHistoryArgs (): string[] {
   return ['history', '--json']
 }

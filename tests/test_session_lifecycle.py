@@ -41,6 +41,79 @@ def session_record(name: str, *, closed_at: str | None = None) -> dict:
 
 
 class SessionLifecycleTests(unittest.TestCase):
+    def test_fork_creates_pending_cdx_session_from_source_codex_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            registry_path = Path(tmp) / "sessions.json"
+            lock_path = Path(tmp) / "lock"
+            source = session_record("source")
+            source["codex_session_id"] = "019e3f90-209d-71f0-ad82-9739a8b6f9be"
+            source["last_cwd"] = tmp
+            registry_path.write_text(
+                json.dumps({"version": cdx.VERSION, "sessions": [source]}),
+                encoding="utf-8",
+            )
+            old_registry_path = cdx.REGISTRY_PATH
+            old_lock_path = cdx.LOCK_PATH
+            old_require_tool = cdx.require_tool
+            old_tmux_exists = cdx.tmux_exists
+            cdx.REGISTRY_PATH = registry_path
+            cdx.LOCK_PATH = lock_path
+            cdx.require_tool = lambda _name: None
+            cdx.tmux_exists = lambda _name: False
+            try:
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    rc = cdx.cmd_fork(["--json", "--no-enter", "source", "source fork"])
+            finally:
+                cdx.REGISTRY_PATH = old_registry_path
+                cdx.LOCK_PATH = old_lock_path
+                cdx.require_tool = old_require_tool
+                cdx.tmux_exists = old_tmux_exists
+
+            self.assertEqual(rc, 0)
+            data = json.loads(output.getvalue())
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["session"]["name"], "source fork")
+            self.assertIsNone(data["session"]["codex_session_id"])
+            self.assertEqual(data["session"]["fork_from_codex_session_id"], "019e3f90-209d-71f0-ad82-9739a8b6f9be")
+            self.assertEqual(data["session"]["fork_from_cdx_id"], source["id"])
+            saved = json.loads(registry_path.read_text(encoding="utf-8"))["sessions"]
+            self.assertEqual([session["name"] for session in saved], ["source", "source fork"])
+
+    def test_hook_binding_clears_pending_fork_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            registry_path = Path(tmp) / "sessions.json"
+            lock_path = Path(tmp) / "lock"
+            forked = session_record("forked")
+            forked["codex_session_id"] = None
+            forked["fork_from_codex_session_id"] = "019e3f90-209d-71f0-ad82-9739a8b6f9be"
+            forked["fork_from_cdx_id"] = "src123"
+            registry_path.write_text(
+                json.dumps({"version": cdx.VERSION, "sessions": [forked]}),
+                encoding="utf-8",
+            )
+            old_registry_path = cdx.REGISTRY_PATH
+            old_lock_path = cdx.LOCK_PATH
+            old_find_transcript = cdx.find_codex_transcript_path
+            old_is_subagent = cdx.transcript_is_subagent
+            cdx.REGISTRY_PATH = registry_path
+            cdx.LOCK_PATH = lock_path
+            cdx.find_codex_transcript_path = lambda _codex_id: None
+            cdx.transcript_is_subagent = lambda _path: False
+            try:
+                bound = cdx.bind_cdx_session_to_codex_id(forked["id"], "019e4077-f917-7000-94d3-353734c05d1c", source="test")
+            finally:
+                cdx.REGISTRY_PATH = old_registry_path
+                cdx.LOCK_PATH = old_lock_path
+                cdx.find_codex_transcript_path = old_find_transcript
+                cdx.transcript_is_subagent = old_is_subagent
+
+            self.assertTrue(bound)
+            saved = json.loads(registry_path.read_text(encoding="utf-8"))["sessions"][0]
+            self.assertEqual(saved["codex_session_id"], "019e4077-f917-7000-94d3-353734c05d1c")
+            self.assertNotIn("fork_from_codex_session_id", saved)
+            self.assertNotIn("fork_from_cdx_id", saved)
+
     def test_close_soft_closes_session_and_kills_live_tmux(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             registry_path = Path(tmp) / "sessions.json"
