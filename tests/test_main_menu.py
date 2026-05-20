@@ -50,6 +50,36 @@ class MainMenuTests(unittest.TestCase):
         self.assertNotIn("查看 UUID", text)
         self.assertEqual(calls, [])
 
+    def test_main_menu_exposes_close_and_history_actions(self) -> None:
+        calls: list[str] = []
+        choices = iter(["c", "h", "0"])
+        old_load_registry = cdx.load_registry
+        old_tmux_exists = cdx.tmux_exists
+        old_prompt = cdx.prompt
+        old_cmd_close = cdx.cmd_close
+        old_cmd_history = cdx.cmd_history
+        cdx.load_registry = lambda: {"version": cdx.VERSION, "sessions": []}
+        cdx.tmux_exists = lambda _name: False
+        cdx.prompt = lambda _message: next(choices)
+        cdx.cmd_close = lambda _args: calls.append("close") or 0
+        cdx.cmd_history = lambda _args: calls.append("history") or 0
+        try:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                rc = cdx.main_menu()
+        finally:
+            cdx.load_registry = old_load_registry
+            cdx.tmux_exists = old_tmux_exists
+            cdx.prompt = old_prompt
+            cdx.cmd_close = old_cmd_close
+            cdx.cmd_history = old_cmd_history
+
+        text = output.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("关闭会话", text)
+        self.assertIn("历史会话", text)
+        self.assertEqual(calls, ["close", "history"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -548,12 +548,36 @@ def install_tmux_mouse_bindings() -> None:
             log_event(f"tmux mouse binding failed: {' '.join(binding)}: {result.stderr.strip()}")
 
 
-def sorted_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
+def session_is_closed(session: dict[str, Any]) -> bool:
+    return bool(session.get("closed_at"))
+
+
+def active_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    return [session for session in registry.get("sessions", []) if not session_is_closed(session)]
+
+
+def closed_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    return [session for session in registry.get("sessions", []) if session_is_closed(session)]
+
+
+def sort_session_list(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
-        registry.get("sessions", []),
+        sessions,
         key=lambda s: (sort_key_time(s.get("last_used_at")) or sort_key_time(s.get("created_at")), s.get("name", "")),
         reverse=True,
     )
+
+
+def sorted_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    return sort_session_list(active_sessions(registry))
+
+
+def sorted_closed_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    return sort_session_list(closed_sessions(registry))
+
+
+def sorted_all_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    return sort_session_list(registry.get("sessions", []))
 
 
 def short_text(text: str | None, max_len: int = 28) -> str:
@@ -1221,6 +1245,21 @@ def print_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
     return sessions
 
 
+def print_closed_sessions(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    sessions = sorted_closed_sessions(registry)
+    if not sessions:
+        print_empty("当前没有历史 cdx 会话。")
+        return []
+    print_header("历史 cdx 会话", "close 后保留在这里；reopen 可恢复到主列表。")
+    for i, session in enumerate(sessions, start=1):
+        bound = "bound" if session.get("codex_session_id") else "unbound"
+        closed = display_time(session.get("closed_at"))
+        name = short_text(session.get("name"), 30)
+        print(f"  {cyan(str(i).rjust(2))}  {bold(name)}")
+        print(f"      {status_text(bound)}  {dim('closed')}  {dim(closed)}")
+    return sessions
+
+
 def emit_json(data: dict[str, Any]) -> None:
     json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
@@ -1237,6 +1276,8 @@ def session_json(session: dict[str, Any], *, include_status: bool = True) -> dic
         "tmux_session": session.get("tmux_session"),
         "codex_session_id": session.get("codex_session_id"),
         "bound": bool(session.get("codex_session_id")),
+        "closed": session_is_closed(session),
+        "closed_at": session.get("closed_at"),
         "unread": session_has_unread_result(session),
         "activity_state": activity["state"],
         "activity_started_at": activity["started_at"],
@@ -1351,6 +1392,25 @@ def choose_cdx_session(prompt: str = "选择 cdx 会话") -> dict[str, Any] | No
         if session.get("name") == choice:
             return session
     print(red("未找到会话。"))
+    return None
+
+
+def choose_closed_cdx_session(prompt: str = "选择历史 cdx 会话") -> dict[str, Any] | None:
+    registry = load_registry()
+    sessions = print_closed_sessions(registry)
+    if not sessions:
+        return None
+    choice = globals()["prompt"](f"{prompt} [编号/名称，空取消]: ")
+    if not choice:
+        return None
+    if choice.isdigit():
+        idx = int(choice)
+        if 1 <= idx <= len(sessions):
+            return sessions[idx - 1]
+    for session in sessions:
+        if session.get("name") == choice:
+            return session
+    print(red("未找到历史会话。"))
     return None
 
 
@@ -1901,6 +1961,31 @@ def cmd_list(args: list[str]) -> int:
     return 0
 
 
+def cmd_history(args: list[str]) -> int:
+    args = list(args)
+    json_mode = take_flag(args, "--json")
+    if args:
+        print_error(f"未知参数: {' '.join(args)}", json_mode=json_mode)
+        return 1
+    registry = load_registry()
+    sessions = sorted_closed_sessions(registry)
+    if json_mode:
+        emit_json(
+            {
+                "ok": True,
+                "version": VERSION,
+                "sessions": [session_json(session) for session in sessions],
+            }
+        )
+        return 0
+    chosen = choose_closed_cdx_session("重新打开哪个历史会话")
+    if not chosen:
+        return 0
+    if not ask_yes_no(f"重新打开：{chosen['name']}？", default=True):
+        return 1
+    return reopen_session(chosen["id"], enter=True, json_mode=False)
+
+
 def print_uuid_detail(session: dict[str, Any]) -> int:
     print_header("Codex UUID", "这是 cdx 记录的真实 Codex session id。")
     print(f"  cdx_name:     {bold(session.get('name', ''))}")
@@ -1928,7 +2013,7 @@ def cmd_uuid(args: list[str]) -> int:
         if args:
             print_error(f"未知参数: {' '.join(args)}", json_mode=json_mode)
             return 1
-        sessions = sorted_sessions(registry)
+        sessions = sorted_all_sessions(registry)
         if json_mode:
             emit_json(
                 {
@@ -2003,6 +2088,9 @@ def cmd_new(args: list[str]) -> int:
     registry = load_registry()
     existing = find_session_by_name(registry, name)
     if existing:
+        if session_is_closed(existing):
+            print_error(f"会话“{name}”已关闭，请使用 cdx reopen 恢复。", json_mode=json_mode)
+            return 1
         if json_mode:
             emit_json({"ok": True, "existing": True, "session": session_json(existing)})
             return 0
@@ -2050,12 +2138,30 @@ def resolve_session_arg(args: list[str], prompt: str, *, noninteractive: bool = 
     return choose_cdx_session(prompt)
 
 
+def resolve_closed_session_arg(args: list[str], prompt: str, *, noninteractive: bool = False, json_mode: bool = False) -> dict[str, Any] | None:
+    if args:
+        name = " ".join(args).strip()
+        registry = load_registry()
+        session = find_session_by_name(registry, name)
+        if not session or not session_is_closed(session):
+            print_error(f"未找到历史会话: {name}", json_mode=json_mode)
+            return None
+        return session
+    if noninteractive:
+        print_error("缺少 cdx_name。", json_mode=json_mode)
+        return None
+    return choose_closed_cdx_session(prompt)
+
+
 def cmd_enter(args: list[str]) -> int:
     args = list(args)
     print_command = take_flag(args, "--print-command")
     new_if_unbound = take_flag(args, "--new-if-unbound")
     session = resolve_session_arg(args, "进入哪个会话", noninteractive=print_command)
     if not session:
+        return 1
+    if session_is_closed(session):
+        print_error(f"会话“{session.get('name', '')}”已关闭，请使用 cdx reopen 恢复。")
         return 1
     if print_command:
         flags = " --new-if-unbound" if new_if_unbound else ""
@@ -2079,6 +2185,102 @@ def cmd_mark_viewed(args: list[str]) -> int:
         return 0
     print(green(f"已标记为已查看: {updated.get('name', '')}"))
     return 0
+
+
+def cmd_close(args: list[str]) -> int:
+    args = list(args)
+    json_mode = take_flag(args, "--json")
+    yes = take_flag(args, "--yes")
+    noninteractive = json_mode or yes
+    session = resolve_session_arg(args, "关闭哪个会话", noninteractive=noninteractive, json_mode=json_mode)
+    if not session:
+        return 1
+    already_closed = session_is_closed(session)
+    live = tmux_exists(session["tmux_session"]) if not already_closed else False
+    if not already_closed and not yes:
+        print_header("关闭确认", "会话会移入历史，可用 cdx reopen 恢复；不会删除 Codex 原始历史。")
+        print(f"  会话: {bold(session['name'])}")
+        print(f"  tmux: {status_text('live') if live else dim('exited')}")
+        print()
+        print("  将执行:")
+        print("  - 从主列表隐藏，保留在历史 cdx")
+        if live:
+            print("  - tmux 正在运行，会被关闭并中断 Codex")
+        else:
+            print("  - tmux 未运行")
+        print("  - 保留 Codex session id、transcript 和指标")
+        confirm = prompt("输入完整会话名确认: ")
+        if confirm != session["name"]:
+            print(yellow("确认不匹配，已取消。"))
+            return 1
+    if live:
+        subprocess.run(["tmux", "kill-session", "-t", session["tmux_session"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log_event(f"killed tmux session {session['tmux_session']} during close")
+    closed_session = dict(session)
+    if not already_closed:
+        with registry_lock():
+            registry = load_registry()
+            current = find_session_by_id(registry, session["id"])
+            if not current:
+                print_error("注册表中找不到该会话。", json_mode=json_mode)
+                return 1
+            ts = now_utc()
+            current["closed_at"] = ts
+            current["updated_at"] = ts
+            closed_session = dict(current)
+            save_registry(registry, timestamped_backup=True)
+        log_event(f"closed cdx session id={session['id']} name={session['name']!r}")
+    if json_mode:
+        emit_json(
+            {
+                "ok": True,
+                "already_closed": already_closed,
+                "killed_tmux": live,
+                "session": session_json(closed_session, include_status=False),
+            }
+        )
+        return 0
+    if already_closed:
+        print(dim("该会话已在历史中。"))
+    else:
+        print(green("已关闭，会话已移入历史。"))
+    return 0
+
+
+def reopen_session(session_id: str, *, enter: bool = False, json_mode: bool = False) -> int:
+    reopened: dict[str, Any] | None = None
+    with registry_lock():
+        registry = load_registry()
+        current = find_session_by_id(registry, session_id)
+        if not current:
+            print_error("注册表中找不到该会话。", json_mode=json_mode)
+            return 1
+        if session_is_closed(current):
+            current.pop("closed_at", None)
+            ts = now_utc()
+            current["updated_at"] = ts
+            current["last_used_at"] = ts
+            save_registry(registry, timestamped_backup=True)
+        reopened = dict(current)
+    log_event(f"reopened cdx session id={session_id} name={reopened.get('name', '')!r}")
+    enter_rc = 0
+    if enter:
+        enter_rc = enter_session(reopened)
+    if json_mode:
+        emit_json({"ok": enter_rc == 0, "entered": enter, "enter_rc": enter_rc, "session": session_json(reopened)})
+    elif not enter:
+        print(green(f"已重新打开: {reopened.get('name', '')}"))
+    return enter_rc
+
+
+def cmd_reopen(args: list[str]) -> int:
+    args = list(args)
+    json_mode = take_flag(args, "--json")
+    enter = take_flag(args, "--enter")
+    session = resolve_closed_session_arg(args, "重新打开哪个历史会话", noninteractive=json_mode, json_mode=json_mode)
+    if not session:
+        return 1
+    return reopen_session(session["id"], enter=enter, json_mode=json_mode)
 
 
 def cmd_delete(args: list[str]) -> int:
@@ -2805,7 +3007,7 @@ def cmd_doctor(_: list[str]) -> int:
         if len(codex_ids) != len(set(codex_ids)):
             print(f"{red('ERR')} codex_session_id 重复绑定")
             problems += 1
-        for session in sorted_sessions(registry):
+        for session in sorted_all_sessions(registry):
             prefix = f"{session.get('name')} ({session.get('id')})"
             status = tmux_status(session)
             bound = session.get("codex_session_id")
@@ -2927,14 +3129,17 @@ def cmd_hook_session_start(_: list[str]) -> int:
 def main_menu() -> int:
     while True:
         registry = load_registry()
-        count = len(registry.get("sessions", []))
-        live_count = sum(1 for session in registry.get("sessions", []) if tmux_exists(session["tmux_session"]))
-        subtitle = f"{count} 个 cdx 会话 · {live_count} 个 live tmux"
+        active = active_sessions(registry)
+        history_count = len(closed_sessions(registry))
+        live_count = sum(1 for session in active if tmux_exists(session["tmux_session"]))
+        subtitle = f"{len(active)} 个 cdx 会话 · {history_count} 个历史 · {live_count} 个 live tmux"
         print_menu(
             APP_NAME,
             [
                 ("1", "进入会话", "attach 到 live tmux，或自动 resume Codex"),
                 ("2", "新建会话", "选择常用目录，创建一个新的 Codex 工作台"),
+                ("c", "关闭会话", "kill tmux，移入历史，可重新打开"),
+                ("h", "历史会话", "查看已关闭的 cdx，并可重新打开"),
                 ("3", "删除会话", "kill tmux 并删除 cdx 映射，不删 Codex 历史"),
                 ("4", "重命名会话", "修改用途名，live 会话也支持"),
                 ("5", "手动映射/导入", "绑定、导入、解除或转移 Codex 原始会话"),
@@ -2948,6 +3153,10 @@ def main_menu() -> int:
             cmd_enter([])
         elif choice == "2":
             cmd_new([])
+        elif choice in {"c", "C"}:
+            cmd_close([])
+        elif choice in {"h", "H"}:
+            cmd_history([])
         elif choice == "3":
             cmd_delete([])
         elif choice == "4":
@@ -2970,6 +3179,9 @@ def usage() -> str:
   cdx enter [cdx_name]      进入会话
   cdx enter --new-if-unbound [cdx_name]
   cdx enter --print-command [cdx_name]
+  cdx close [--yes] [cdx_name]
+  cdx history [--json]      查看已关闭 cdx 会话
+  cdx reopen [--enter] [cdx_name]
   cdx mark-viewed --json [cdx_name]
   cdx uuid [cdx_name]       查看绑定的 Codex session id
   cdx uuid --all            列出所有 cdx 会话的绑定 UUID
@@ -3012,6 +3224,12 @@ def dispatch(argv: list[str]) -> int:
         "create": cmd_new,
         "enter": cmd_enter,
         "open": cmd_enter,
+        "close": cmd_close,
+        "archive": cmd_close,
+        "history": cmd_history,
+        "hist": cmd_history,
+        "reopen": cmd_reopen,
+        "restore": cmd_reopen,
         "mark-viewed": cmd_mark_viewed,
         "viewed": cmd_mark_viewed,
         "read": cmd_mark_viewed,
