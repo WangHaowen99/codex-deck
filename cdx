@@ -1813,7 +1813,7 @@ def ensure_tmux_ready_for_attach(session: dict[str, Any]) -> bool:
 def attach_tmux(session: dict[str, Any]) -> int:
     tmux_name = session["tmux_session"]
     configure_tmux_session(tmux_name)
-    prepare_mobile_context_view(tmux_name)
+    prepare_mobile_context_view(session)
     if os.environ.get("TMUX"):
         result = subprocess.run(["tmux", "switch-client", "-t", tmux_name])
     else:
@@ -1829,20 +1829,39 @@ def is_mobile_like_terminal() -> bool:
     return term in {"vt100", "linux"} or columns <= 70
 
 
-def prepare_mobile_context_view(tmux_name: str) -> None:
+def prepare_mobile_context_view(session: dict[str, Any]) -> None:
     if not is_mobile_like_terminal():
         return
-    text = tmux_capture_text(tmux_name, start="-")
-    if not text or "[cdx-context-preview" not in text:
+    tmux_name = session["tmux_session"]
+    marker = session_context_preview_marker(session)
+    if not marker:
         return
-    for args in (
-        ["tmux", "copy-mode", "-t", tmux_name],
-        ["tmux", "send-keys", "-t", tmux_name, "-X", "history-top"],
-    ):
-        result = subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        if result.returncode != 0:
-            log_event(f"mobile context view failed session={tmux_name}: {' '.join(args)}: {result.stderr.strip()}")
-            return
+    preview_window = f"cdx-preview-{session.get('id', '')}"
+    existing = tmux_display_value(f"{tmux_name}:{preview_window}", "#{window_id}")
+    if existing:
+        subprocess.run(["tmux", "kill-window", "-t", f"{tmux_name}:{preview_window}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    preview = transcript_context_preview(
+        resolve_session_transcript_path(session),
+        marker=f"[cdx-mobile-context {marker}]",
+        width=shutil.get_terminal_size(fallback=(50, 24)).columns,
+    )
+    if not preview:
+        return
+    preview_path = STATE_DIR / f"mobile-preview-{session.get('id', '')}.txt"
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    preview_path.write_text(
+        preview + "\n\n[cdx] 按 q 返回 Codex 当前对话。\n",
+        encoding="utf-8",
+    )
+    command = f"less -R {shlex.quote(str(preview_path))}; tmux select-window -t {shlex.quote(tmux_name)}:0; tmux kill-window -t {shlex.quote(tmux_name)}:{shlex.quote(preview_window)}"
+    result = subprocess.run(
+        ["tmux", "new-window", "-t", tmux_name, "-n", preview_window, command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        log_event(f"mobile context preview window failed session={tmux_name}: {result.stderr.strip()}")
 
 
 def touch_last_used(session_id: str, *, mark_viewed: bool = False) -> None:

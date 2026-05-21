@@ -159,39 +159,47 @@ class TmuxHistoryTests(unittest.TestCase):
 
         self.assertEqual(output_filter.feed(b"before\x1b[2Jafter") + output_filter.flush(), b"before\x1b[2Jafter")
 
-    def test_mobile_context_view_enters_copy_mode_at_history_top(self) -> None:
+    def test_mobile_context_view_opens_preview_window_without_sending_to_codex_pane(self) -> None:
         calls: list[list[str]] = []
         old_is_mobile = cdx.is_mobile_like_terminal
-        old_capture = cdx.tmux_capture_text
+        old_marker = cdx.session_context_preview_marker
+        old_preview = cdx.transcript_context_preview
+        old_display = cdx.tmux_display_value
+        old_state_dir = cdx.STATE_DIR
         old_run = cdx.subprocess.run
-        cdx.is_mobile_like_terminal = lambda: True
-        cdx.tmux_capture_text = lambda _tmux_name, *, start="-": "[cdx-context-preview id=abc]"
-        cdx.subprocess.run = lambda args, **_kwargs: calls.append(list(args)) or Completed()
-        try:
-            cdx.prepare_mobile_context_view("cdx_demo")
-        finally:
-            cdx.is_mobile_like_terminal = old_is_mobile
-            cdx.tmux_capture_text = old_capture
-            cdx.subprocess.run = old_run
+        with tempfile.TemporaryDirectory() as tmp:
+            cdx.is_mobile_like_terminal = lambda: True
+            cdx.session_context_preview_marker = lambda _session: "[cdx-context-preview id=abc]"
+            cdx.transcript_context_preview = lambda _path, **_kwargs: "mobile preview\nline 2"
+            cdx.tmux_display_value = lambda _target, _fmt: None
+            cdx.STATE_DIR = Path(tmp)
+            cdx.subprocess.run = lambda args, **_kwargs: calls.append(list(args)) or Completed()
+            try:
+                cdx.prepare_mobile_context_view({"id": "abc123", "tmux_session": "cdx_demo", "transcript_path": "/tmp/demo.jsonl"})
+            finally:
+                cdx.is_mobile_like_terminal = old_is_mobile
+                cdx.session_context_preview_marker = old_marker
+                cdx.transcript_context_preview = old_preview
+                cdx.tmux_display_value = old_display
+                cdx.STATE_DIR = old_state_dir
+                cdx.subprocess.run = old_run
 
-        self.assertEqual(calls, [
-            ["tmux", "copy-mode", "-t", "cdx_demo"],
-            ["tmux", "send-keys", "-t", "cdx_demo", "-X", "history-top"],
-        ])
+            preview_file = Path(tmp) / "mobile-preview-abc123.txt"
+            self.assertIn("mobile preview", preview_file.read_text(encoding="utf-8"))
+
+        self.assertTrue(any(call[:5] == ["tmux", "new-window", "-t", "cdx_demo", "-n"] for call in calls))
+        self.assertFalse(any(call[:4] == ["tmux", "send-keys", "-t", "cdx_demo"] for call in calls))
 
     def test_desktop_context_view_does_not_enter_copy_mode(self) -> None:
         calls: list[list[str]] = []
         old_is_mobile = cdx.is_mobile_like_terminal
-        old_capture = cdx.tmux_capture_text
         old_run = cdx.subprocess.run
         cdx.is_mobile_like_terminal = lambda: False
-        cdx.tmux_capture_text = lambda _tmux_name, *, start="-": "[cdx-context-preview id=abc]"
         cdx.subprocess.run = lambda args, **_kwargs: calls.append(list(args)) or Completed()
         try:
-            cdx.prepare_mobile_context_view("cdx_demo")
+            cdx.prepare_mobile_context_view({"tmux_session": "cdx_demo", "transcript_path": "/tmp/demo.jsonl"})
         finally:
             cdx.is_mobile_like_terminal = old_is_mobile
-            cdx.tmux_capture_text = old_capture
             cdx.subprocess.run = old_run
 
         self.assertEqual(calls, [])
