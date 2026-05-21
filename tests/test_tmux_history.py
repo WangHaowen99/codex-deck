@@ -159,6 +159,43 @@ class TmuxHistoryTests(unittest.TestCase):
 
         self.assertEqual(output_filter.feed(b"before\x1b[2Jafter") + output_filter.flush(), b"before\x1b[2Jafter")
 
+    def test_mobile_context_view_enters_copy_mode_at_history_top(self) -> None:
+        calls: list[list[str]] = []
+        old_is_mobile = cdx.is_mobile_like_terminal
+        old_capture = cdx.tmux_capture_text
+        old_run = cdx.subprocess.run
+        cdx.is_mobile_like_terminal = lambda: True
+        cdx.tmux_capture_text = lambda _tmux_name, *, start="-": "[cdx-context-preview id=abc]"
+        cdx.subprocess.run = lambda args, **_kwargs: calls.append(list(args)) or Completed()
+        try:
+            cdx.prepare_mobile_context_view("cdx_demo")
+        finally:
+            cdx.is_mobile_like_terminal = old_is_mobile
+            cdx.tmux_capture_text = old_capture
+            cdx.subprocess.run = old_run
+
+        self.assertEqual(calls, [
+            ["tmux", "copy-mode", "-t", "cdx_demo"],
+            ["tmux", "send-keys", "-t", "cdx_demo", "-X", "history-top"],
+        ])
+
+    def test_desktop_context_view_does_not_enter_copy_mode(self) -> None:
+        calls: list[list[str]] = []
+        old_is_mobile = cdx.is_mobile_like_terminal
+        old_capture = cdx.tmux_capture_text
+        old_run = cdx.subprocess.run
+        cdx.is_mobile_like_terminal = lambda: False
+        cdx.tmux_capture_text = lambda _tmux_name, *, start="-": "[cdx-context-preview id=abc]"
+        cdx.subprocess.run = lambda args, **_kwargs: calls.append(list(args)) or Completed()
+        try:
+            cdx.prepare_mobile_context_view("cdx_demo")
+        finally:
+            cdx.is_mobile_like_terminal = old_is_mobile
+            cdx.tmux_capture_text = old_capture
+            cdx.subprocess.run = old_run
+
+        self.assertEqual(calls, [])
+
     def test_codex_session_id_from_process_output_detects_resume_target(self) -> None:
         output = "\n".join(
             [
