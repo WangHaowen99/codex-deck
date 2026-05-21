@@ -65,6 +65,8 @@ class TmuxHistoryTests(unittest.TestCase):
         self.assertIn(f"-N {EXPECTED_SCROLL_LINES} scroll-down", wheel_down)
         self.assertIn("'copy-mode -e -t ='", wheel_up)
         self.assertNotIn("copy-mode -e -t = \\", wheel_up)
+        self.assertIn(["tmux", "bind-key", "-T", "root", "C-u", "copy-mode", "-e", "\\;", "send-keys", "-X", "-N", EXPECTED_SCROLL_LINES, "scroll-up"], calls)
+        self.assertIn(["tmux", "bind-key", "-T", "root", "C-d", "copy-mode", "-e", "\\;", "send-keys", "-X", "-N", EXPECTED_SCROLL_LINES, "scroll-down"], calls)
 
     def test_new_tmux_session_configures_history_before_starting_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,35 +161,20 @@ class TmuxHistoryTests(unittest.TestCase):
 
         self.assertEqual(output_filter.feed(b"before\x1b[2Jafter") + output_filter.flush(), b"before\x1b[2Jafter")
 
-    def test_mobile_context_view_opens_preview_window_without_sending_to_codex_pane(self) -> None:
+    def test_mobile_context_view_enters_copy_mode_without_sending_to_codex_pane(self) -> None:
         calls: list[list[str]] = []
         old_is_mobile = cdx.is_mobile_like_terminal
-        old_marker = cdx.session_context_preview_marker
-        old_preview = cdx.transcript_context_preview
-        old_display = cdx.tmux_display_value
-        old_state_dir = cdx.STATE_DIR
         old_run = cdx.subprocess.run
-        with tempfile.TemporaryDirectory() as tmp:
-            cdx.is_mobile_like_terminal = lambda: True
-            cdx.session_context_preview_marker = lambda _session: "[cdx-context-preview id=abc]"
-            cdx.transcript_context_preview = lambda _path, **_kwargs: "mobile preview\nline 2"
-            cdx.tmux_display_value = lambda _target, _fmt: None
-            cdx.STATE_DIR = Path(tmp)
-            cdx.subprocess.run = lambda args, **_kwargs: calls.append(list(args)) or Completed()
-            try:
-                cdx.prepare_mobile_context_view({"id": "abc123", "tmux_session": "cdx_demo", "transcript_path": "/tmp/demo.jsonl"})
-            finally:
-                cdx.is_mobile_like_terminal = old_is_mobile
-                cdx.session_context_preview_marker = old_marker
-                cdx.transcript_context_preview = old_preview
-                cdx.tmux_display_value = old_display
-                cdx.STATE_DIR = old_state_dir
-                cdx.subprocess.run = old_run
+        cdx.is_mobile_like_terminal = lambda: True
+        cdx.subprocess.run = lambda args, **_kwargs: calls.append(list(args)) or Completed()
+        try:
+            cdx.prepare_mobile_context_view({"id": "abc123", "tmux_session": "cdx_demo", "transcript_path": "/tmp/demo.jsonl"})
+        finally:
+            cdx.is_mobile_like_terminal = old_is_mobile
+            cdx.subprocess.run = old_run
 
-            preview_file = Path(tmp) / "mobile-preview-abc123.txt"
-            self.assertIn("mobile preview", preview_file.read_text(encoding="utf-8"))
-
-        self.assertTrue(any(call[:5] == ["tmux", "new-window", "-t", "cdx_demo", "-n"] for call in calls))
+        self.assertIn(["tmux", "copy-mode", "-e", "-t", "cdx_demo"], calls)
+        self.assertTrue(any(call[:4] == ["tmux", "display-message", "-t", "cdx_demo"] for call in calls))
         self.assertFalse(any(call[:4] == ["tmux", "send-keys", "-t", "cdx_demo"] for call in calls))
 
     def test_desktop_context_view_does_not_enter_copy_mode(self) -> None:
@@ -267,7 +254,7 @@ class TmuxHistoryTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(events, ["recreate", "touch:True", "attach"])
 
-    def test_enter_session_recreates_live_tmux_without_context_preview(self) -> None:
+    def test_enter_session_keeps_live_tmux_without_context_preview(self) -> None:
         session = {
             "id": "abc123",
             "name": "demo",
@@ -314,7 +301,7 @@ class TmuxHistoryTests(unittest.TestCase):
             cdx.attach_tmux = old_attach
 
         self.assertEqual(rc, 0)
-        self.assertEqual(events, ["recreate", "touch:True", "attach"])
+        self.assertEqual(events, ["touch:True", "attach"])
 
     def test_enter_session_keeps_live_tmux_with_latest_context_preview(self) -> None:
         session = {

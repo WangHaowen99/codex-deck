@@ -243,7 +243,7 @@ class ViewStateTests(unittest.TestCase):
             self.assertEqual(preview.count("用户: 问题 3"), 1)
             self.assertIn("...", preview)
 
-    def test_cmd_runner_prints_context_preview_before_resume(self) -> None:
+    def test_cmd_runner_does_not_print_context_preview_before_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             cwd = tmp_path / "repo"
@@ -298,8 +298,8 @@ class ViewStateTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(calls, [["codex", "resume", "--no-alt-screen", "codex-1"]])
             text = output.getvalue()
-            self.assertIn("恢复前的问题", text)
-            self.assertLess(text.index("恢复前的问题"), text.index("下面进入 Codex"))
+            self.assertNotIn("恢复前的问题", text)
+            self.assertNotIn("下面进入 Codex", text)
 
     def test_context_preview_marker_ignores_non_visible_transcript_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

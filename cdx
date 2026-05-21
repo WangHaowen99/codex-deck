@@ -536,6 +536,12 @@ def install_tmux_mouse_bindings() -> None:
             f"if-shell -F -t = '#{{pane_in_mode}}' 'send-keys -X -N {scroll_lines} scroll-up' 'copy-mode -e -t ='",
             "if-shell -F -t = '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -e -t ='",
         ],
+        ["bind-key", "-T", "root", "C-u", "copy-mode", "-e", "\\;", "send-keys", "-X", "-N", scroll_lines, "scroll-up"],
+        ["bind-key", "-T", "root", "C-d", "copy-mode", "-e", "\\;", "send-keys", "-X", "-N", scroll_lines, "scroll-down"],
+        ["bind-key", "-T", "copy-mode-vi", "C-u", "send-keys", "-X", "-N", scroll_lines, "scroll-up"],
+        ["bind-key", "-T", "copy-mode-vi", "C-d", "send-keys", "-X", "-N", scroll_lines, "scroll-down"],
+        ["bind-key", "-T", "copy-mode", "C-u", "send-keys", "-X", "-N", scroll_lines, "scroll-up"],
+        ["bind-key", "-T", "copy-mode", "C-d", "send-keys", "-X", "-N", scroll_lines, "scroll-down"],
         [
             "bind-key",
             "-T",
@@ -1757,17 +1763,7 @@ def create_tmux_if_needed(session: dict[str, Any]) -> bool:
 
 
 def tmux_has_latest_context_preview(session: dict[str, Any]) -> bool:
-    marker = session_context_preview_marker(session)
-    if not marker:
-        return True
-    text = tmux_capture_text(session["tmux_session"], start="-")
-    if text is None:
-        return True
-    if marker in text:
-        return True
-    compact_marker = re.sub(r"\s+", "", marker)
-    compact_text = re.sub(r"\s+", "", text)
-    return compact_marker in compact_text
+    return True
 
 
 def recreate_tmux_session(session: dict[str, Any]) -> bool:
@@ -1803,10 +1799,6 @@ def ensure_tmux_ready_for_attach(session: dict[str, Any]) -> bool:
         print(dim("检测到 tmux 现场仍是旧 Codex 会话，正在按当前 cdx 绑定重建。"))
         log_event(f"stale tmux session {tmux_name}: actual={actual_codex_id} expected={expected_codex_id}")
         return recreate_tmux_session(session)
-    if not tmux_has_latest_context_preview(session):
-        print(dim("检测到 tmux 现场缺少最新上下文预览，正在重建。"))
-        log_event(f"missing latest context preview in tmux session {tmux_name}; recreating for cdx id={session['id']}")
-        return recreate_tmux_session(session)
     return True
 
 
@@ -1833,35 +1825,27 @@ def prepare_mobile_context_view(session: dict[str, Any]) -> None:
     if not is_mobile_like_terminal():
         return
     tmux_name = session["tmux_session"]
-    marker = session_context_preview_marker(session)
-    if not marker:
-        return
-    preview_window = f"cdx-preview-{session.get('id', '')}"
-    existing = tmux_display_value(f"{tmux_name}:{preview_window}", "#{window_id}")
-    if existing:
-        subprocess.run(["tmux", "kill-window", "-t", f"{tmux_name}:{preview_window}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    preview = transcript_context_preview(
-        resolve_session_transcript_path(session),
-        marker=f"[cdx-mobile-context {marker}]",
-        width=shutil.get_terminal_size(fallback=(50, 24)).columns,
-    )
-    if not preview:
-        return
-    preview_path = STATE_DIR / f"mobile-preview-{session.get('id', '')}.txt"
-    preview_path.parent.mkdir(parents=True, exist_ok=True)
-    preview_path.write_text(
-        preview + "\n\n[cdx] 按 q 返回 Codex 当前对话。\n",
-        encoding="utf-8",
-    )
-    command = f"less -R {shlex.quote(str(preview_path))}; tmux select-window -t {shlex.quote(tmux_name)}:0; tmux kill-window -t {shlex.quote(tmux_name)}:{shlex.quote(preview_window)}"
     result = subprocess.run(
-        ["tmux", "new-window", "-t", tmux_name, "-n", preview_window, command],
+        ["tmux", "copy-mode", "-e", "-t", tmux_name],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
     )
     if result.returncode != 0:
-        log_event(f"mobile context preview window failed session={tmux_name}: {result.stderr.strip()}")
+        log_event(f"mobile copy-mode failed session={tmux_name}: {result.stderr.strip()}")
+        return
+    subprocess.run(
+        [
+            "tmux",
+            "display-message",
+            "-t",
+            tmux_name,
+            "手机浏览历史：上滑或按 Ctrl-u 上翻，Ctrl-d 下翻；按 q 回到底部输入。",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
 
 
 def touch_last_used(session_id: str, *, mark_viewed: bool = False) -> None:
@@ -3188,7 +3172,6 @@ def cmd_runner(args: list[str]) -> int:
         env["CDX_NAME"] = session["name"]
         env["CDX_REGISTRY"] = str(REGISTRY_PATH)
         args = codex_args_for_session(session)
-        print_session_context_preview(session)
         log_event(f"runner starting {' '.join(args)} for cdx id={session['id']}")
         started_at = time.time()
         if not session.get("codex_session_id"):
