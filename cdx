@@ -4,18 +4,25 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import hashlib
+import io
 import json
 import os
+import pty
 import re
+import select
 import secrets
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import threading
 import time
+import termios
+import tty
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -75,6 +82,7 @@ CODEX_SESSION_INDEX = CODEX_HOME / "session_index.jsonl"
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
 CODEX_SHELL_SNAPSHOTS_DIR = CODEX_HOME / "shell_snapshots"
 CODEX_ID_PATTERN = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
+SCROLLBACK_CLEAR_SEQUENCE = b"\x1b[3J"
 
 
 class CdxError(Exception):
@@ -495,14 +503,19 @@ def configure_tmux_session(tmux_name: str) -> None:
 def configure_tmux_server() -> None:
     if shutil.which("tmux") is None:
         return
-    result = subprocess.run(
-        ["tmux", "set-option", "-gq", "mouse", "on"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if result.returncode != 0:
-        log_event(f"tmux global mouse option failed: {result.stderr.strip()}")
+    options = [
+        ("mouse", "on"),
+        ("history-limit", str(TMUX_HISTORY_LIMIT)),
+    ]
+    for option, value in options:
+        result = subprocess.run(
+            ["tmux", "set-option", "-gq", option, value],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0:
+            log_event(f"tmux global option failed option={option} value={value}: {result.stderr.strip()}")
 
 
 def install_tmux_mouse_bindings() -> None:
@@ -1717,6 +1730,7 @@ def create_tmux_if_needed(session: dict[str, Any]) -> bool:
         if tmux_exists(tmux_name):
             configure_tmux_session(tmux_name)
             return True
+        configure_tmux_server()
         window_name = short_text(current["name"], 30) or "cdx"
         result = subprocess.run(
             ["tmux", "new-session", "-d", "-s", tmux_name, "-n", window_name],
@@ -1788,6 +1802,10 @@ def ensure_tmux_ready_for_attach(session: dict[str, Any]) -> bool:
             return True
         print(dim("检测到 tmux 现场仍是旧 Codex 会话，正在按当前 cdx 绑定重建。"))
         log_event(f"stale tmux session {tmux_name}: actual={actual_codex_id} expected={expected_codex_id}")
+        return recreate_tmux_session(session)
+    if not tmux_has_latest_context_preview(session):
+        print(dim("检测到 tmux 现场缺少最新上下文预览，正在重建。"))
+        log_event(f"missing latest context preview in tmux session {tmux_name}; recreating for cdx id={session['id']}")
         return recreate_tmux_session(session)
     return True
 
@@ -3133,18 +3151,18 @@ def cmd_runner(args: list[str]) -> int:
         started_at = time.time()
         if not session.get("codex_session_id"):
             start_shell_snapshot_binding_watcher(session["id"], started_at=started_at)
-        result = subprocess.run(args, env=env)
+        returncode = run_interactive_command_filtered(args, env=env)
         if not session.get("codex_session_id"):
             bind_from_recent_shell_snapshots(session["id"], started_at=started_at)
-        if result.returncode != 0:
-            log_event(f"runner codex exited rc={result.returncode} cdx id={session['id']}")
-            print(f"\nCodex 退出码：{result.returncode}")
+        if returncode != 0:
+            log_event(f"runner codex exited rc={returncode} cdx id={session['id']}")
+            print(f"\nCodex 退出码：{returncode}")
             print("如果是 resume 失败，请运行 cdx map 或 cdx doctor 修复映射。")
             try:
                 input("按 Enter 退出 tmux...")
             except EOFError:
                 pass
-        return result.returncode
+        return returncode
     except KeyboardInterrupt:
         return 130
 
@@ -3155,6 +3173,99 @@ def codex_args_for_session(session: dict[str, Any]) -> list[str]:
     if session.get("fork_from_codex_session_id"):
         return ["codex", "fork", "--no-alt-screen", session["fork_from_codex_session_id"]]
     return ["codex", "--no-alt-screen"]
+
+
+class TerminalOutputFilter:
+    def __init__(self) -> None:
+        self._pending = b""
+
+    def feed(self, chunk: bytes) -> bytes:
+        data = self._pending + chunk
+        data = data.replace(SCROLLBACK_CLEAR_SEQUENCE, b"")
+        keep = 0
+        max_prefix = min(len(SCROLLBACK_CLEAR_SEQUENCE) - 1, len(data))
+        for size in range(max_prefix, 0, -1):
+            if SCROLLBACK_CLEAR_SEQUENCE.startswith(data[-size:]):
+                keep = size
+                break
+        if keep:
+            self._pending = data[-keep:]
+            return data[:-keep]
+        self._pending = b""
+        return data
+
+    def flush(self) -> bytes:
+        pending = self._pending
+        self._pending = b""
+        return pending
+
+
+def run_interactive_command_filtered(args: list[str], *, env: dict[str, str]) -> int:
+    try:
+        sys.stdin.fileno()
+        sys.stdout.fileno()
+    except (AttributeError, OSError, io.UnsupportedOperation):
+        result = subprocess.run(args, env=env)
+        return result.returncode
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        try:
+            os.execvpe(args[0], args, env)
+        except OSError as exc:
+            print(f"exec failed: {exc}", file=sys.stderr)
+            os._exit(127)
+    sync_pty_window_size(master_fd)
+    output_filter = TerminalOutputFilter()
+    stdin_fd = sys.stdin.fileno()
+    stdout_fd = sys.stdout.fileno()
+    old_stdin_attrs = termios.tcgetattr(stdin_fd) if sys.stdin.isatty() else None
+    try:
+        if old_stdin_attrs is not None:
+            tty.setraw(stdin_fd)
+        while True:
+            readable, _, _ = select.select([master_fd, stdin_fd], [], [])
+            if master_fd in readable:
+                try:
+                    data = os.read(master_fd, 4096)
+                except OSError as exc:
+                    if exc.errno == errno.EIO:
+                        break
+                    raise
+                if not data:
+                    break
+                filtered = output_filter.feed(data)
+                if filtered:
+                    os.write(stdout_fd, filtered)
+            if stdin_fd in readable:
+                data = os.read(stdin_fd, 4096)
+                if data:
+                    os.write(master_fd, data)
+    finally:
+        if old_stdin_attrs is not None:
+            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_stdin_attrs)
+        tail = output_filter.flush()
+        if tail:
+            os.write(stdout_fd, tail)
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+    _, status = os.waitpid(pid, 0)
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return 1
+
+
+def sync_pty_window_size(master_fd: int) -> None:
+    try:
+        size = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b"\0" * 8)
+        rows, cols, _, _ = struct.unpack("HHHH", size)
+        if rows > 0 and cols > 0:
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, size)
+    except OSError:
+        pass
 
 
 def cmd_hook_session_start(_: list[str]) -> int:

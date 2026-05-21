@@ -126,6 +126,10 @@ class TmuxHistoryTests(unittest.TestCase):
             history_index = calls.index(
                 ["tmux", "set-option", "-q", "-t", "cdx_abc123", "history-limit", EXPECTED_HISTORY_LIMIT]
             )
+            global_history_index = calls.index(
+                ["tmux", "set-option", "-gq", "history-limit", EXPECTED_HISTORY_LIMIT]
+            )
+            self.assertLess(global_history_index, calls.index(new_session_call))
             send_keys_index = next(i for i, call in enumerate(calls) if call[:4] == ["tmux", "send-keys", "-t", "cdx_abc123"])
             self.assertLess(history_index, send_keys_index)
             self.assertIn("__runner abc123", calls[send_keys_index][-2])
@@ -140,6 +144,20 @@ class TmuxHistoryTests(unittest.TestCase):
             cdx.codex_args_for_session({"fork_from_codex_session_id": "codex-source"}),
             ["codex", "fork", "--no-alt-screen", "codex-source"],
         )
+
+    def test_terminal_output_filter_removes_scrollback_clear_sequence(self) -> None:
+        output_filter = cdx.TerminalOutputFilter()
+
+        first = output_filter.feed(b"before\x1b[")
+        second = output_filter.feed(b"3Jafter")
+        final = output_filter.flush()
+
+        self.assertEqual(first + second + final, b"beforeafter")
+
+    def test_terminal_output_filter_keeps_regular_clear_screen_sequence(self) -> None:
+        output_filter = cdx.TerminalOutputFilter()
+
+        self.assertEqual(output_filter.feed(b"before\x1b[2Jafter") + output_filter.flush(), b"before\x1b[2Jafter")
 
     def test_codex_session_id_from_process_output_detects_resume_target(self) -> None:
         output = "\n".join(
@@ -204,7 +222,7 @@ class TmuxHistoryTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(events, ["recreate", "touch:True", "attach"])
 
-    def test_enter_session_keeps_matching_live_tmux_without_context_preview(self) -> None:
+    def test_enter_session_recreates_live_tmux_without_context_preview(self) -> None:
         session = {
             "id": "abc123",
             "name": "demo",
@@ -225,6 +243,55 @@ class TmuxHistoryTests(unittest.TestCase):
         cdx.tmux_exists = lambda _name: True
         cdx.live_tmux_codex_session_id = lambda _name: "019e3f90-209d-71f0-ad82-9739a8b6f9be"
         cdx.tmux_has_latest_context_preview = lambda _session: False
+        cdx.session_activity = lambda _session: {"state": "read", "started_at": None, "elapsed_seconds": None}
+        cdx.recreate_tmux_session = lambda _session: events.append("recreate") or True
+        cdx.touch_last_used = lambda _session_id, *, mark_viewed=False: events.append(f"touch:{mark_viewed}")
+        cdx.attach_tmux = lambda _session: events.append("attach") or 0
+        try:
+            with redirect_stdout(io.StringIO()):
+                rc = cdx.enter_session(session)
+        finally:
+            cdx.tmux_exists = old_tmux_exists
+            if old_live_codex is None:
+                delattr(cdx, "live_tmux_codex_session_id")
+            else:
+                cdx.live_tmux_codex_session_id = old_live_codex
+            if old_has_preview is None:
+                delattr(cdx, "tmux_has_latest_context_preview")
+            else:
+                cdx.tmux_has_latest_context_preview = old_has_preview
+            cdx.session_activity = old_session_activity
+            if old_recreate is None:
+                delattr(cdx, "recreate_tmux_session")
+            else:
+                cdx.recreate_tmux_session = old_recreate
+            cdx.touch_last_used = old_touch
+            cdx.attach_tmux = old_attach
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(events, ["recreate", "touch:True", "attach"])
+
+    def test_enter_session_keeps_live_tmux_with_latest_context_preview(self) -> None:
+        session = {
+            "id": "abc123",
+            "name": "demo",
+            "tmux_session": "cdx_abc123",
+            "codex_session_id": "019e3f90-209d-71f0-ad82-9739a8b6f9be",
+            "last_cwd": "/tmp",
+        }
+        events: list[str] = []
+
+        old_tmux_exists = cdx.tmux_exists
+        old_live_codex = getattr(cdx, "live_tmux_codex_session_id", None)
+        old_has_preview = getattr(cdx, "tmux_has_latest_context_preview", None)
+        old_session_activity = cdx.session_activity
+        old_recreate = getattr(cdx, "recreate_tmux_session", None)
+        old_touch = cdx.touch_last_used
+        old_attach = cdx.attach_tmux
+
+        cdx.tmux_exists = lambda _name: True
+        cdx.live_tmux_codex_session_id = lambda _name: "019e3f90-209d-71f0-ad82-9739a8b6f9be"
+        cdx.tmux_has_latest_context_preview = lambda _session: True
         cdx.session_activity = lambda _session: {"state": "read", "started_at": None, "elapsed_seconds": None}
         cdx.recreate_tmux_session = lambda _session: events.append("recreate") or True
         cdx.touch_last_used = lambda _session_id, *, mark_viewed=False: events.append(f"touch:{mark_viewed}")
